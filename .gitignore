@@ -1,0 +1,27 @@
+# Third-party executables and archives are downloaded locally, never bundled.
+/bin/*
+!/bin/.gitkeep
+*.exe
+*.dll
+*.zip
+*.7z
+
+# Runtime data may contain local process paths and proxy endpoints.
+/logs/
+/state/
+/runtime/
+/data/
+/.proxy2tun-install.json
+*.log
+
+# Local credentials, editor state and scratch files.
+.env
+.env.*
+*.local.json
+*.secret*
+/work/
+/.vs/
+/.vscode/
+*.user
+Thumbs.db
+Desktop.ini
