@@ -1,0 +1,22 @@
+name: Windows checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PowerShell 5.1 syntax and offline behavior checks
+        shell: powershell
+        run: ./tests/Test-All.ps1
+      - name: Official dependency config compatibility
+        shell: powershell
+        run: |
+          $url = 'https://github.com/SagerNet/sing-box/releases/download/v1.14.2/sing-box-1.14.2-windows-amd64.zip'
+          Invoke-WebRequest -UseBasicParsing $url -OutFile "$env:RUNNER_TEMP\sing-box.zip"
+          if ((Get-FileHash "$env:RUNNER_TEMP\sing-box.zip").Hash -ne 'C2D8BFFF918755808781DFDEEB8581B6C91EB3A243D9A7B55483CFC0C0684D32') { throw 'SHA256 mismatch' }
+          Expand-Archive "$env:RUNNER_TEMP\sing-box.zip" "$env:RUNNER_TEMP\sing-box"
+          ./tests/Test-All.ps1 -SingBoxPath "$env:RUNNER_TEMP\sing-box\sing-box-1.14.2-windows-amd64\sing-box.exe"
