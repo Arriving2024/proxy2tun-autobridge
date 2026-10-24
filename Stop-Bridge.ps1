@@ -9,14 +9,14 @@ $statePath=Join-Path $runtime 'state.json'
 if (-not (Test-Path -LiteralPath $runtime)) { Write-Host 'Nothing to stop.'; return }
 [IO.File]::WriteAllText((Join-Path $runtime 'stop.request'), 'stop')
 if (-not (Test-Path -LiteralPath $statePath)) { Write-Host 'Stop requested; no owned core recorded.'; return }
-$state=Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+$state=Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($state.Schema -ne 1 -or $state.Root -ne $PSScriptRoot) { throw 'Ownership state mismatch. Refusing to stop unrelated processes.' }
 if (-not $Emergency) {
     $deadline=[DateTime]::UtcNow.AddSeconds(15)
     while ([DateTime]::UtcNow -lt $deadline -and (Test-P2TStamp $state.Owner)) { Start-Sleep -Milliseconds 250 }
 }
 # The watcher may have changed child/adapter while the stop request was delivered.
-$state=Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+$state=Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($state.Schema -ne 1 -or $state.Root -ne $PSScriptRoot) { throw 'Ownership state changed unexpectedly.' }
 if ((Test-P2TStamp $state.Owner) -or ($state.Child -and (Test-P2TStamp $state.Child))) {
     if (-not (Test-P2TAdministrator)) { throw 'Stop requested. For forced cleanup, run Stop-Bridge.cmd as administrator.' }

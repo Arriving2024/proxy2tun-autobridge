@@ -41,9 +41,11 @@ $marker = Join-Path $target '.proxy2tun-install.json'
 $raw = Get-Content -LiteralPath $marker -Raw
 $manifest = $raw | ConvertFrom-Json
 Assert-Test ($manifest.installRoot -ieq $target) 'Manifest root differs.'
-Assert-Test (@($manifest.files).Count -eq 19) 'Installation file count differs.'
+Assert-Test (@($manifest.files).Count -eq 24) 'Installation file count differs.'
+Assert-Test ($manifest.version -eq '0.2.0') 'Installation version differs.'
+Assert-Test (Test-Path -LiteralPath (Join-Path $target 'src/Health.psm1')) 'Health module missing from installation.'
 Assert-Test (Test-Path -LiteralPath (Join-Path $target 'bin/sing-box.exe')) 'Binary was not installed.'
-Pass-Test 'fresh installation, exact ownership root, 19 allowlisted files'
+Pass-Test 'fresh installation, exact ownership root, 24 allowlisted files and v0.2.0 health module'
 
 $sentinel = Join-Path $target 'user-file.txt'
 'user sentinel' | Set-Content -LiteralPath $sentinel

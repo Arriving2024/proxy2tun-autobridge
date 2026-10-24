@@ -11,10 +11,11 @@ $version = '1.14.2'
 $assetUrl = 'https://github.com/SagerNet/sing-box/releases/download/v1.14.2/sing-box-1.14.2-windows-amd64.zip'
 $assetSha256 = 'c2d8bfff918755808781dfdeeb8581b6c91eb3a243d9a7b55483cfc0c0684d32'
 $sourceFiles = @(
-    'Start-Bridge.ps1', 'Stop-Bridge.ps1', 'Show-Logs.ps1',
+    'Start-Bridge.ps1', 'Stop-Bridge.ps1', 'Stop-Misty-TUN.ps1', 'Show-Logs.ps1',
     'Start-Bridge.cmd', 'Stop-Bridge.cmd', 'install.ps1', 'uninstall.ps1',
-    'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', '.gitignore',
-    'src/Discovery.psm1', 'src/Config.psm1', 'src/Lifecycle.psm1', 'src/NativeProcess.cs',
+    'README.md', 'CHANGELOG.md', 'RELEASE_NOTES.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', '.gitignore',
+    'src/Discovery.psm1', 'src/Config.psm1', 'src/Lifecycle.psm1', 'src/Health.psm1', 'src/NativeProcess.cs',
+    'tools/Repair-LegacyScriptEncoding.ps1',
     'docs/architecture.md', 'docs/troubleshooting.md', 'docs/validation.md'
 )
 
@@ -97,7 +98,7 @@ try {
     New-Item -ItemType Directory -Path $target -ErrorAction Stop | Out-Null
     $targetCreated = $true
     Assert-NoReparseAncestor $target
-    foreach ($directoryName in @('src', 'docs', 'bin')) {
+    foreach ($directoryName in @('src', 'docs', 'bin', 'tools')) {
         $directoryPath = Join-Path $target $directoryName
         New-Item -ItemType Directory -Path $directoryPath -ErrorAction Stop | Out-Null
         $createdDirectories.Add($directoryPath)
@@ -115,7 +116,7 @@ try {
         [ordered]@{ path = $relative; sha256 = (Get-FileHash -LiteralPath (Join-Path $target $relative) -Algorithm SHA256).Hash.ToLowerInvariant() }
     })
     $manifest = [ordered]@{
-        project = 'Proxy2TUN-AutoBridge'; schemaVersion = 1; version = '0.1.0'
+        project = 'Proxy2TUN-AutoBridge'; schemaVersion = 1; version = '0.2.0'
         installRoot = $target; createdUtc = [DateTime]::UtcNow.ToString('o'); files = $records
     }
     $marker = Join-Path $target '.proxy2tun-install.json'

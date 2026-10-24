@@ -9,10 +9,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if (-not $InstallDir) { $InstallDir = $PSScriptRoot }
 $allowedFiles = @(
-    'Start-Bridge.ps1', 'Stop-Bridge.ps1', 'Show-Logs.ps1',
+    'Start-Bridge.ps1', 'Stop-Bridge.ps1', 'Stop-Misty-TUN.ps1', 'Show-Logs.ps1',
     'Start-Bridge.cmd', 'Stop-Bridge.cmd', 'install.ps1', 'uninstall.ps1',
-    'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', '.gitignore',
-    'src/Discovery.psm1', 'src/Config.psm1', 'src/Lifecycle.psm1', 'src/NativeProcess.cs',
+    'README.md', 'CHANGELOG.md', 'RELEASE_NOTES.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', '.gitignore',
+    'src/Discovery.psm1', 'src/Config.psm1', 'src/Lifecycle.psm1', 'src/Health.psm1', 'src/NativeProcess.cs',
+    'tools/Repair-LegacyScriptEncoding.ps1',
     'docs/architecture.md', 'docs/troubleshooting.md', 'docs/validation.md', 'bin/sing-box.exe'
 )
 
@@ -40,7 +41,7 @@ if (-not (Test-Path -LiteralPath $target -PathType Container) -or $target.Starts
 }
 $marker = Assert-OwnedPath (Join-Path $target '.proxy2tun-install.json') $target
 if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { throw 'Missing installation ownership manifest. No files were removed. A source checkout is not an installation.' }
-$manifest = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
+$manifest = Get-Content -LiteralPath $marker -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($manifest.project -cne 'Proxy2TUN-AutoBridge' -or $manifest.schemaVersion -ne 1 -or $manifest.installRoot -ine $target) {
     throw 'Installation ownership manifest does not match this exact directory. No files were removed.'
 }
@@ -102,7 +103,7 @@ if ($PurgeData -and (Test-Path -LiteralPath $dataRoot -PathType Container)) {
     if (@(Get-ChildItem -LiteralPath $dataRoot -Force).Count -eq 0) { Remove-Item -LiteralPath $dataRoot }
 }
 Remove-Item -LiteralPath $marker -Force
-foreach ($name in @('src', 'docs', 'bin')) {
+foreach ($name in @('src', 'docs', 'bin', 'tools')) {
     $directory = Assert-OwnedPath (Join-Path $target $name) $target
     if ((Test-Path -LiteralPath $directory -PathType Container) -and @(Get-ChildItem -LiteralPath $directory -Force).Count -eq 0) { Remove-Item -LiteralPath $directory }
 }

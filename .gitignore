@@ -20,6 +20,7 @@
 *.local.json
 *.secret*
 /work/
+/dist/
 /.vs/
 /.vscode/
 *.user

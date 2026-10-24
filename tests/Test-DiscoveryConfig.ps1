@@ -58,10 +58,20 @@ Assert-True ($config.inbounds[0].address.Count -eq 2) 'IPv4 and IPv6 TUN address
 Assert-True ($config.route.auto_detect_interface) 'Physical interface auto detection enabled'
 Assert-True ($config.route.rules[0].process_path -contains $socks.ProcessPath) 'Exact upstream path bypassed'
 Assert-True ($config.route.rules[0].process_path -contains $socks.ParentPath) 'Related application parent bypassed'
-Assert-True (-not $config.inbounds[0].strict_route -and $config.inbounds[0].dns_mode -eq 'disabled') 'Conservative OS DNS bootstrap mode explicit'
-Assert-True ($config.route.rules[1].port[0] -eq 53 -and $config.route.rules[1].outbound -eq 'direct') 'Windows DNS Client exception scoped to port 53'
+Assert-True (-not $config.inbounds[0].strict_route -and $config.inbounds[0].dns_mode -eq 'hijack') 'Windows TUN DNS interception enabled explicitly'
+Assert-True ($config.route.rules[1].port[0] -eq 53 -and $config.route.rules[1].action -eq 'hijack-dns') 'DNS hijack precedes UDP rejection and private-IP bypass'
+Assert-True (@($config.route.rules | Where-Object { $_.Contains('process_path') -and ($_.process_path -match 'svchost.exe') }).Count -eq 0) 'Default configuration does not bypass shared Windows application DNS'
 Assert-True ($config.dns.servers[0].detour -eq 'upstream' -and $config.dns.servers[0].server -eq '1.1.1.1') 'Remote DoH uses upstream without domain bootstrap'
-Assert-True ($config.route.rules[3].network -contains 'udp' -and $config.route.rules[3].network -contains 'icmp' -and $config.route.rules[3].action -eq 'reject') 'Unsupported general UDP and ICMP rejected'
+Assert-True ($config.dns.servers[0].type -eq 'https' -and $config.dns.servers[0].path -eq '/dns-query' -and $config.dns.servers[0].server_port -eq 443 -and $config.dns.servers[0].tls.enabled -and $config.dns.servers[0].tls.server_name -eq 'cloudflare-dns.com') 'DoH has literal bootstrap IP and verified TLS identity'
+Assert-True ($config.dns.strategy -eq 'ipv4_only') 'Working IPv4-only DNS policy retained'
+Assert-True ($config.route.rules[2].network -contains 'udp' -and $config.route.rules[2].network -contains 'icmp' -and $config.route.rules[2].action -eq 'reject') 'Unsupported general UDP and ICMP rejected after DNS hijack'
+$bootstrapConfig = New-P2TSingBoxConfig -Candidate $socks -InterfaceName p2t-bootstrap-test -AllowSystemDnsBootstrap
+Assert-True ($bootstrapConfig.inbounds[0].dns_mode -eq 'hijack' -and $bootstrapConfig.route.rules[1].outbound -eq 'direct' -and $bootstrapConfig.route.rules[1].port[0] -eq 53 -and $bootstrapConfig.route.rules[1].process_path[0].EndsWith('\System32\svchost.exe')) 'Shared Windows DNS bypass requires explicit compatibility opt-in'
+$httpConfig = New-P2TSingBoxConfig -Candidate $http -InterfaceName p2t-http-test
+Assert-True ($httpConfig.outbounds[0].type -eq 'http' -and $httpConfig.outbounds[0].server_port -eq 10809 -and $httpConfig.dns.servers[0].detour -eq $httpConfig.outbounds[0].tag) 'Generic HTTP upstream dynamically supplies DoH detour'
+$ipv6Candidate = New-Candidate -Port 7890; $ipv6Candidate.Host='::1'
+$ipv6Config = New-P2TSingBoxConfig -Candidate $ipv6Candidate -InterfaceName p2t-ipv6-proxy
+Assert-True ($ipv6Config.outbounds[0].server -eq '::1' -and $ipv6Config.outbounds[0].server_port -eq 7890) 'Discovered IPv6 loopback and custom port are retained'
 $generic = New-Candidate; $generic.ParentPath='C:\Windows\explorer.exe'; $generic.ParentName='explorer.exe'
 Assert-True (@(Get-P2TDirectProcessPaths $generic).Count -eq 1) 'Generic Explorer parent is not bypassed'
 $unrelated = New-Candidate; $unrelated.ParentPath='C:\Unrelated\OtherApp.exe'
@@ -70,6 +80,8 @@ $missing = New-Candidate; $missing.ProcessPath=''
 Assert-Throws { New-P2TSingBoxConfig -Candidate $missing -InterfaceName p2t-test } 'Missing process path fails closed'
 $self = New-Candidate; $self.ProcessPath='C:\Apps\sing-box.exe'
 Assert-Throws { New-P2TSingBoxConfig -Candidate $self -InterfaceName p2t-test } 'sing-box loopback upstream rejected'
+$sharedHost = New-Candidate; $sharedHost.ProcessPath='C:\Windows\System32\svchost.exe'
+Assert-Throws { New-P2TSingBoxConfig -Candidate $sharedHost -InterfaceName p2t-test } 'Shared DNS service host cannot become a broad upstream bypass'
 Assert-Throws { New-P2TSingBoxConfig -Candidate $socks -InterfaceName Ethernet } 'Unowned adapter name rejected'
 Assert-Throws { New-P2TSingBoxConfig -Candidate $socks -InterfaceName p2t-test -ExtraDirectProcessPath 'relative.exe' } 'Relative helper bypass rejected'
 $extraExe = (Get-Process -Id $PID).Path
@@ -89,6 +101,9 @@ try {
         Write-P2TSingBoxConfig -Config (New-P2TSingBoxConfig -Candidate $http -InterfaceName p2t-http-test) -Path $temporaryConfig
         & $SingBoxPath check -c $temporaryConfig
         Assert-True ($LASTEXITCODE -eq 0) 'Official sing-box accepts HTTP configuration'
+        Write-P2TSingBoxConfig -Config $bootstrapConfig -Path $temporaryConfig
+        & $SingBoxPath check -c $temporaryConfig
+        Assert-True ($LASTEXITCODE -eq 0) 'Official sing-box accepts explicit bootstrap compatibility configuration'
     }
 } finally { Remove-Item -LiteralPath $temporaryConfig -Force }
 Write-Host ('PASS: {0} discovery/config assertions on PowerShell {1}. Offline fixtures do not validate a live TUN.' -f $script:assertionCount,$PSVersionTable.PSVersion)

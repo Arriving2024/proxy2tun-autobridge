@@ -36,11 +36,13 @@ function Remove-P2TOwnedNetwork {
     param($State)
     # An alias alone is insufficient evidence. Match GUID captured after creation.
     if (-not $State.AdapterGuid -or $State.InterfaceName -notmatch '^p2t-[a-f0-9]{10}$') { return }
-    $adapter = Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | Where-Object {
+    # Inspection errors are not proof of absence. Preserve the ownership state
+    # and stop the watcher if cleanup cannot be verified before a rebuild.
+    $adapter = Get-NetAdapter -IncludeHidden -ErrorAction Stop | Where-Object {
         $_.Name -eq $State.InterfaceName -and $_.InterfaceGuid.ToString() -eq $State.AdapterGuid
     }
     if ($adapter) {
-        Get-NetRoute -InterfaceIndex $adapter.ifIndex -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction Stop
+        Get-NetRoute -ErrorAction Stop | Where-Object { $_.InterfaceIndex -eq $adapter.ifIndex } | Remove-NetRoute -Confirm:$false -ErrorAction Stop
         $adapter | Disable-NetAdapter -Confirm:$false -ErrorAction Stop
     }
 }
