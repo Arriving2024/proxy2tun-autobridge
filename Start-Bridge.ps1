@@ -27,7 +27,7 @@ if($ProxyEndpoint){
     $selection=@{ProxyHost=$endpoint.Host.Trim('[',']');ProxyPort=$endpoint.Port;ProxyProtocol=$endpoint.Scheme}
     if($selection.ProxyHost -eq 'localhost'){$selection.ProxyHost='127.0.0.1'}
 }
-if($Mode -eq 'Detect'){Get-P2TProxyCandidates | Format-Table Protocol,Host,Port,ProcessId,ProcessName,ParentName,Source -AutoSize;return}
+if($Mode -eq 'Detect'){Get-P2TProxyCandidates @selection | Format-Table Protocol,Host,Port,ProcessId,ProcessName,ParentName,Source -AutoSize;return}
 if(-not (Test-Path -LiteralPath $SingBoxPath -PathType Leaf)){throw 'sing-box.exe missing. Run install.ps1 or provide -SingBoxPath.'}
 $SingBoxPath=(Resolve-Path -LiteralPath $SingBoxPath).Path
 $version=(& $SingBoxPath version 2>&1 | Out-String)
@@ -36,7 +36,7 @@ $runtime=Join-Path $PSScriptRoot 'runtime'
 $null=New-Item -ItemType Directory -Force -Path $runtime
 $configPath=Join-Path $runtime 'config.json'
 if($Mode -eq 'Generate'){
-    $candidate=Select-P2TProxyCandidate -Candidates @(Get-P2TProxyCandidates) @selection
+    $candidate=Select-P2TProxyCandidate -Candidates @(Get-P2TProxyCandidates @selection) @selection
     if(-not $candidate){throw 'No compatible proxy detected. Start your proxy client and retry.'}
     $config=New-P2TSingBoxConfig -Candidate $candidate -InterfaceName ('p2t-'+[guid]::NewGuid().ToString('N').Substring(0,10)) -ExtraDirectProcessPath $ExtraDirectProcessPath -AllowSystemDnsBootstrap:$AllowSystemDnsBootstrap
     $null=Set-P2TSingBoxConfig -Config $config -Path (Join-Path $runtime 'preview.json') -SingBoxPath $SingBoxPath
@@ -80,7 +80,7 @@ try {
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
     $state=[ordered]@{Schema=1;Root=$PSScriptRoot;Owner=(Get-P2TProcessStamp $PID);Child=$null;InterfaceName=$null;AdapterGuid=$null;Status='Waiting';RecoveryFailures=0}
     Write-P2TState -State $state -Path $statePath
-    Write-P2TLog -Path $logPath -Message 'Proxy2TUN AutoBridge v0.2.0. Foreground watcher; DNS and HTTPS checks enabled. Ctrl+C or Stop-Bridge stops it.'
+    Write-P2TLog -Path $logPath -Message 'Proxy2TUN AutoBridge v0.2.1. Foreground watcher; DNS and HTTPS checks enabled. Ctrl+C or Stop-Bridge stops it.'
     $network=New-P2TNetworkObservation -Snapshot (Get-P2TNetworkFingerprint)
     $candidate=$null;$misses=0;$tunMisses=0;$forwardingMisses=0;$lastNotice='';$scanAt=[DateTime]::MinValue;$healthAt=[DateTime]::MinValue;$lastHealth=''
     while(-not (Test-Path -LiteralPath $stopPath)){
@@ -127,7 +127,7 @@ try {
             continue
         }
         try{
-            $candidate=Select-P2TProxyCandidate -Candidates @(Get-P2TProxyCandidates) @selection
+            $candidate=Select-P2TProxyCandidate -Candidates @(Get-P2TProxyCandidates @selection) @selection
             if(-not $candidate -or -not (Test-P2TProcessIdentity -Candidate $candidate)){continue}
             if(Get-Process -Name 'sing-box' -ErrorAction SilentlyContinue){throw 'AnotherCorePresent'}
             $state.InterfaceName='p2t-'+[guid]::NewGuid().ToString('N').Substring(0,10)

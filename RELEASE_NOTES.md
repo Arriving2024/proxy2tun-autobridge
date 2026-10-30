@@ -1,14 +1,15 @@
-# Proxy2TUN AutoBridge v0.2.0 — experimental prerelease
+# Proxy2TUN AutoBridge v0.2.1 — experimental patch prerelease
 
-继续实际仓库的 v0.1.0，修复“本地代理可用，TUN 存活但 DNS / 转发失败”的恢复路径，并保持现有 Detect / Generate / Watch、归属核验、紧急停止及卸载入口。
+整合 v0.2.0 在朋友电脑部署和本机排障中发现的封装层问题，保留现有 Detect / Generate / Watch、并排安装、配置回滚、紧急停止和可逆卸载。
 
-- sing-box 1.14.x TUN 改为 `dns_mode: hijack`；Cloudflare DoH 使用 `1.1.1.1:443`、SNI `cloudflare-dns.com`、`/dns-query`，通过自动检测的 SOCKS5 / HTTP `upstream` 出站。端口和客户端名称不写死为 Misty。
-- 启动和运行中验证 DNS / HTTPS，识别 Cloudflare challenge HTTP 403；监测出口接口、代理健康和核心存活但转发失效。连续失败按有限预算和退避恢复，用尽后释放本实例 TUN 并暂停恢复。
-- 生成配置先检查、再原子替换和备份；启动验证失败后撤销新实例并回滚。PowerShell 编码检查防止 5.1 将无 BOM 中文脚本误解为旧代码页。
-- 增加离线编码修复工具、单元/模拟集成检查，以及只含白名单源码的 ZIP、文件清单和 SHA-256 校验。
+- **指定代理直接检查**：`-ProxyEndpoint` 在发现阶段就限定地址、端口和协议，跳过无关端口扫描。
+- **核验实际连接归属**：处理 Windows 监听表 PID 0、重复记录和漏项，通过保持中的连接核验真正的代理进程；未知归属不会默认放行。
+- **修正拆分路由检查**：验证完整 CIDR 并集，兼容回环地址排除造成的进一步拆分；缺少公网覆盖或网卡归属不符仍拒绝启动。
+- **修正 DNS 误停**：正确识别有相关、完整 SOA 的合法 NODATA 响应，保留事务和报文结构验证。
+- **合并脱敏调试记录**：记录朋友代理可达但 TUN 未运行、手动 TUN 可达，以及本机误判修复；区分真实输出、历史回顾、模拟测试和待完成验收。诊断步骤避开 PowerShell 5.1 的空字符串原生命令参数陷阱。
 
-用户提供的 Windows 11 手动记录显示：`socks5h` HTTPS 在约 0.4 秒收到 Cloudflare challenge HTTP 403；使用本地 DNS 的 `socks5` 超时；旧 TUN 为 HTTP 000 / reset；重建 TUN 并接管 DoH 后系统 DNS 恢复，HTTPS 返回 403（0.476090 秒），用户确认 Remote 恢复。**这是用户手动方案的证据，不代表本版新封装已通过真实 TUN、Wi-Fi / 以太网切换或所有远控软件验收。** 当前自动化验证范围、命令与限制见 [验证记录](https://github.com/Arriving2024/proxy2tun-autobridge/blob/v0.2.0/docs/validation.md)。
+下载 `Proxy2TUN-AutoBridge-v0.2.1-windows-x64-source.zip`，与 `SHA256SUMS.txt` 核对后解压。升级时先用旧安装目录自己的停止入口退出，再按 README 并排安装到新目录；保留旧安装便于回退。源码包包含文件清单，不包含第三方二进制、节点、订阅、账户信息、运行日志或私人配置。
 
-下载 `Proxy2TUN-AutoBridge-v0.2.0-windows-x64-source.zip` 并与 `SHA256SUMS.txt` 核对。升级时先用旧安装目录自己的停止入口退出，再按 README 并排安装到新目录；需要回退时先停止新版，再运行保留的旧版。不要同时开启两个 TUN，也不要覆盖原有手工配置。本包不包含 sing-box、Misty、节点、订阅、账户信息或本机运行数据。
+本版继续标记实验性预发布。本机旧 Misty 启动器的五轮实际 DNS/HTTPS 检查通过，是同源修复逻辑的现场证据；它不能代替 v0.2.1 完整通用封装在朋友电脑上的管理员验收。HTTP 401、Cloudflare challenge 403 或配置校验通过，也不代表已完成登录后的模型请求或所有远控功能。
 
-保留前台默认行为，不添加开机任务/服务。本版支持公网 TCP，一般 UDP / QUIC / ICMP 拒绝，无 kill switch 或全流量隐私保证。继续标记为实验性预发布；详见 [README](https://github.com/Arriving2024/proxy2tun-autobridge/blob/v0.2.0/README.md)、[CHANGELOG](https://github.com/Arriving2024/proxy2tun-autobridge/blob/v0.2.0/CHANGELOG.md) 和 [第三方说明](https://github.com/Arriving2024/proxy2tun-autobridge/blob/v0.2.0/THIRD-PARTY-NOTICES.md)。
+详见 [README](https://github.com/Arriving2024/proxy2tun-autobridge/blob/v0.2.1/README.md)、[现场调试记录](https://github.com/Arriving2024/proxy2tun-autobridge/blob/v0.2.1/docs/field-debug.md)、[验证范围](https://github.com/Arriving2024/proxy2tun-autobridge/blob/v0.2.1/docs/validation.md) 和 [第三方说明](https://github.com/Arriving2024/proxy2tun-autobridge/blob/v0.2.1/THIRD-PARTY-NOTICES.md)。

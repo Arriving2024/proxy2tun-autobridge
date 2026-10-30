@@ -1,5 +1,6 @@
 #requires -Version 5.1
 Set-StrictMode -Version 2.0
+Add-Type -AssemblyName System.Numerics
 
 function ConvertTo-P2TProcessArgument {
     param([AllowEmptyString()][string]$Value)
@@ -155,12 +156,21 @@ function Test-P2TDnsResponse {
             }
             if($record -ge $answers -and $record -lt $answers+$authorities -and $class -eq 1 -and $type -eq 6){
                 $soaOffset=$offset;$null=Read-P2TDnsName $Message ([ref]$soaOffset);$null=Read-P2TDnsName $Message ([ref]$soaOffset)
-                if($soaOffset+20 -ne $offset+$length){throw 'Invalid SOA record.'};$hasSoa=$true
+                if($soaOffset+20 -ne $offset+$length){throw 'Invalid SOA record.'}
+                # Only the queried name's own zone (or an ancestor zone) can
+                # substantiate this negative answer. A textual suffix without
+                # the DNS label boundary, or an unrelated SOA, is insufficient.
+                if($owner -eq '' -or $question -eq $owner -or $question.EndsWith('.'+$owner,[StringComparison]::OrdinalIgnoreCase)){$hasSoa=$true}
             }
             $offset+=$length
         }
         if($offset -ne $Message.Length){throw 'Unexpected DNS trailing data.'}
         if($rcode -eq 3 -and $answers -eq 0 -and $hasSoa){return [pscustomobject]@{Success=$true;Classification='FreshDnsNxDomain'}}
+        # RFC 2308 section 2.2: NOERROR with no answers and an authority SOA
+        # covering the question is a valid NODATA response, not a DNS failure.
+        # Keep this nonce-probe check conservative: no SOA, unrelated SOA, or
+        # answers requiring further CNAME resolution cannot prove NODATA here.
+        if($rcode -eq 0 -and $answers -eq 0 -and $hasSoa){return [pscustomobject]@{Success=$true;Classification='FreshDnsNoData'}}
         $answerName=$question
         for($depth=0;$depth -le $answers;$depth++){
             if($aNames.Contains($answerName)){return [pscustomobject]@{Success=$true;Classification='FreshDnsPositive'}}
@@ -230,17 +240,75 @@ function Get-P2TNetworkFingerprint {
     } catch { [pscustomobject]@{Valid=$false;Available=$false;Fingerprint=''} }
 }
 
+function ConvertTo-P2TRouteInterval {
+    param([string]$Prefix,[ValidateSet(32,128)][int]$AddressBits)
+    $parts=$Prefix.Split('/')
+    $address=$null
+    if($parts.Count -ne 2 -or -not [Net.IPAddress]::TryParse($parts[0],[ref]$address) -or $parts[1] -notmatch '^\d{1,3}$'){
+        throw 'Invalid route CIDR.'
+    }
+    [byte[]]$bytes=$address.GetAddressBytes()
+    $bits=$bytes.Length*8
+    $prefixBits=[int]$parts[1]
+    if($prefixBits -gt $bits){throw 'Invalid route prefix length.'}
+    if($bits -ne $AddressBits){return $null}
+    # BigInteger consumes signed little-endian bytes. Append a zero sign byte
+    # so high IPv6 addresses remain positive; all arithmetic stays exact.
+    [Array]::Reverse($bytes)
+    [byte[]]$unsignedBytes=$bytes+@([byte]0)
+    $value=New-Object System.Numerics.BigInteger -ArgumentList (,$unsignedBytes)
+    $size=[Numerics.BigInteger]::Pow(2,($bits-$prefixBits))
+    $first=[Numerics.BigInteger]::Multiply([Numerics.BigInteger]::Divide($value,$size),$size)
+    $last=[Numerics.BigInteger]::Subtract([Numerics.BigInteger]::Add($first,$size),[Numerics.BigInteger]::One)
+    return [pscustomobject]@{Start=$first;End=$last}
+}
+
+function Test-P2TRouteCoverage {
+    param([string[]]$Prefixes,[ValidateSet(32,128)][int]$AddressBits)
+    $ranges=New-Object 'Collections.Generic.List[object]'
+    foreach($prefix in $Prefixes){
+        $range=ConvertTo-P2TRouteInterval -Prefix $prefix -AddressBits $AddressBits
+        if($null -ne $range){$ranges.Add($range)}
+    }
+    # Config.psm1 deliberately excludes only these loopbacks. Fill only those
+    # holes before proving the entire remaining address space is on our TUN.
+    $excluded=if($AddressBits -eq 32){'127.0.0.0/8'}else{'::1/128'}
+    $ranges.Add((ConvertTo-P2TRouteInterval -Prefix $excluded -AddressBits $AddressBits))
+    $next=[Numerics.BigInteger]::Zero
+    $limit=[Numerics.BigInteger]::Pow(2,$AddressBits)
+    foreach($range in @($ranges | Sort-Object Start,End)){
+        if([Numerics.BigInteger]::Compare($range.Start,$next) -gt 0){return $false}
+        if([Numerics.BigInteger]::Compare($range.End,$next) -ge 0){
+            $next=[Numerics.BigInteger]::Add($range.End,[Numerics.BigInteger]::One)
+        }
+        if([Numerics.BigInteger]::Compare($next,$limit) -ge 0){return $true}
+    }
+    return $false
+}
+
 function Test-P2TOwnedTunRoutes {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$InterfaceName,[Parameter(Mandatory)][string]$AdapterGuid)
     try {
-        $adapter=Get-NetAdapter -Name $InterfaceName -IncludeHidden -ErrorAction Stop
-        if(-not $adapter -or $adapter.InterfaceGuid.ToString() -ne $AdapterGuid -or $adapter.Status -ne 'Up'){
+        $expectedGuid=[guid]::Empty
+        if([string]::IsNullOrWhiteSpace($InterfaceName) -or -not [guid]::TryParse($AdapterGuid,[ref]$expectedGuid) -or $expectedGuid -eq [guid]::Empty){
             return [pscustomobject]@{Success=$false;Classification='OwnedTunAdapterUnavailable'}
         }
-        $prefixes=@(Get-NetRoute -InterfaceIndex $adapter.ifIndex -ErrorAction Stop | ForEach-Object {$_.DestinationPrefix})
-        $ipv4=($prefixes -contains '0.0.0.0/0' -or ($prefixes -contains '0.0.0.0/1' -and $prefixes -contains '128.0.0.0/1'))
-        $ipv6=($prefixes -contains '::/0' -or ($prefixes -contains '::/1' -and $prefixes -contains '8000::/1'))
+        $adapter=Get-NetAdapter -Name $InterfaceName -IncludeHidden -ErrorAction Stop
+        $actualGuid=[guid]::Empty
+        if(-not $adapter -or $null -eq $adapter.PSObject.Properties['Name'] -or $null -eq $adapter.PSObject.Properties['InterfaceGuid'] -or
+            $null -eq $adapter.PSObject.Properties['Status'] -or $null -eq $adapter.PSObject.Properties['ifIndex'] -or
+            [string]::IsNullOrWhiteSpace([string]$adapter.Name) -or [string]$adapter.Name -ine $InterfaceName -or
+            -not [guid]::TryParse([string]$adapter.InterfaceGuid,[ref]$actualGuid) -or $actualGuid -eq [guid]::Empty -or
+            $actualGuid -ne $expectedGuid -or $adapter.Status -ne 'Up' -or [int]$adapter.ifIndex -le 0){
+            return [pscustomobject]@{Success=$false;Classification='OwnedTunAdapterUnavailable'}
+        }
+        # Recheck each row's interface locally instead of trusting CIM filters.
+        $prefixes=@(Get-NetRoute -InterfaceIndex $adapter.ifIndex -ErrorAction Stop | Where-Object {
+            $null -ne $_.PSObject.Properties['InterfaceIndex'] -and [int]$_.InterfaceIndex -eq [int]$adapter.ifIndex
+        } | ForEach-Object {$_.DestinationPrefix})
+        $ipv4=Test-P2TRouteCoverage -Prefixes $prefixes -AddressBits 32
+        $ipv6=Test-P2TRouteCoverage -Prefixes $prefixes -AddressBits 128
         [pscustomobject]@{Success=($ipv4 -and $ipv6);Classification=$(if($ipv4 -and $ipv6){'OwnedTunRoutesReady'}else{'OwnedTunRoutesMissing'})}
     } catch {[pscustomobject]@{Success=$false;Classification='OwnedTunInspectionFailed'}}
 }

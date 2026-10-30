@@ -71,6 +71,11 @@ namespace P2TTests {
                         if (mode == "http-fragmented") {
                             for (int i=0; i<hello.Length; i++) { stream.WriteByte(hello[i]); if (i % 8 == 0) Thread.Sleep(1); }
                         } else Write(stream,hello);
+                        // A real proxy keeps the tunnel alive after ServerHello.
+                        // Hold until the probe closes so ownership can be inspected
+                        // on the same successful connection, not a later listener.
+                        client.ReceiveTimeout = 15000;
+                        try { stream.ReadByte(); } catch (IOException) { }
                     }
                 }
             } catch (Exception e) { Error=e.GetType().Name; }

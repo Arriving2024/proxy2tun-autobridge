@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.2.1 — 2026-10-31 — experimental patch prerelease
+
+Fix wrapper-level false negatives found while deploying v0.2.0 on a second Windows computer and diagnosing the original local installation. Existing Detect / Generate / Watch commands and recovery/ownership boundaries remain available.
+
+### Fixed
+
+- Pass an explicit proxy selection into discovery before probing. A specified SOCKS5 / HTTP endpoint no longer waits for unrelated listeners and protocols to be scanned.
+- Verify the proxy owner through the server side of a live connection, instead of trusting duplicate, PID-zero or incomplete Windows Listen snapshots. Revalidation checks the process path and start identity of the connected owner.
+- Recognize complete IPv4/IPv6 CIDR unions after the configured loopback exclusions split the routes. Missing public coverage, another adapter or an unverified adapter GUID still fails.
+- Accept RFC 2308 NODATA only with a complete authority IN/SOA covering the exact question or an ancestor zone. Keep transaction, question, class, error-code, truncation and length checks; malformed or unrelated negative responses still fail.
+- Include VERSION and the field-debug guide in new installations; use the existing PowerShell-safe native probe wrapper for diagnosis instead of fragile empty-argument curl commands.
+
+### Evidence and scope
+
+- Added regression cases for real NODATA wire data from a self-generated query, endpoint/owner anomalies, filtered discovery and excluded-loopback route coverage.
+- Sanitized field notes distinguish the friend's visible command output, earlier assistant recaps, the local legacy launcher's live checks, and the generic wrapper's remaining administrator acceptance. HTTP 401/403 proves transport, not a successful authenticated application operation.
+- No change to upstream credentials, client configuration, default persistence, recovery limits, public UDP support or the existing manual C:\Misty-TUN configuration. One-click client-launch/task prototypes from earlier discussions are not represented as tested features of this patch.
+
 ## v0.2.0 — 2026-10-24 — experimental prerelease
 
 Continues the existing v0.1.0 repository and release. This minor release keeps the Detect / Generate / Watch entry points, scoped stop/uninstall, local unauthenticated SOCKS5 / HTTP CONNECT support and foreground defaults. The default DNS behavior intentionally changes to address the observed forwarding failure.

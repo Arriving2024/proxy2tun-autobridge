@@ -99,7 +99,7 @@ function Get-NetRoute {
     param($InterfaceIndex,$ErrorAction)
     $prefixes=@('0.0.0.0/1','128.0.0.0/1','::/1','8000::/1')
     if($script:scenario -eq 'RouteLoss' -and [Proxy2Tun.OwnedProcess]::Starts -eq 1 -and (Test-Path -LiteralPath (Join-Path $script:root 'ran.txt'))){$prefixes=@('0.0.0.0/1','::/1')}
-    foreach($prefix in $prefixes){[pscustomobject]@{DestinationPrefix=$prefix}}
+    foreach($prefix in $prefixes){[pscustomobject]@{DestinationPrefix=$prefix;InterfaceIndex=$InterfaceIndex}}
 }
 function Get-CimInstance {param($ClassName,$Filter) $command=if($Filter -match '51001'){Join-Path $script:root 'Start-Bridge.ps1'}else{Join-Path $script:root 'runtime\config.json'};[pscustomobject]@{CommandLine=$command}}
 Export-ModuleMember -Function *

@@ -1,6 +1,6 @@
 # Third-party dependencies and non-affiliation
 
-Proxy2TUN AutoBridge v0.2.0's original wrapper scripts and documentation remain licensed under the unchanged [MIT License](LICENSE). Third-party software remains under its own license; the MIT license does not relicense those components. This is a source-only wrapper release with no third-party executables or driver binaries.
+Proxy2TUN AutoBridge v0.2.1's original wrapper scripts and documentation remain licensed under the unchanged [MIT License](LICENSE). Third-party software remains under its own license; the MIT license does not relicense those components. This is a source-only wrapper release with no third-party executables or driver binaries. This patch adds no third-party runtime dependency.
 
 ## sing-box
 

@@ -22,6 +22,17 @@ function New-DnsFixture {
     }else{$packet[7]=1;[byte[]]$record=@(192,12,0,1,0,1,0,0,0,30,0,4,1,1,1,1)}
     return ,([byte[]]($packet+$record))
 }
+function New-NegativeDnsFixture {
+    param([string]$SoaOwner='example.com',[int]$SoaClass=1,[int]$RCode=0)
+    [byte[]]$packet=New-P2TDnsQuery -TransactionId 1201 -Name 'p2t-test.example.com'
+    $packet[2]=129;$packet[3]=128+$RCode;$packet[9]=1
+    if($SoaOwner){
+        [byte[]]$ownerQuery=New-P2TDnsQuery -TransactionId 1 -Name $SoaOwner
+        [byte[]]$ownerWire=$ownerQuery[12..($ownerQuery.Length-5)]
+    }else{[byte[]]$ownerWire=@(0)}
+    [byte[]]$record=$ownerWire+@(0,6,0,$SoaClass,0,0,0,30,0,22,0,0)+(New-Object byte[] 20)
+    return ,([byte[]]($packet+$record))
+}
 try{
     $null=New-Item -ItemType Directory -Path $testRoot -Force
     $success=ConvertFrom-P2THttpsProbe -ExitCode 0 -Output '204|0.400'
@@ -57,6 +68,48 @@ try{
     Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'Fresh DNS rejects truncated SOA data'
     [byte[]]$bad=New-P2TDnsQuery -TransactionId 1201 -Name 'p2t-test.example.com';$bad[2]=129;$bad[3]=131
     Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'NXDOMAIN without an authority SOA does not pass'
+
+    # Captured response to our own randomly generated example.com query on
+    # 2026-10-30. It contains only the generated question and public SOA data,
+    # not user traffic, account data, or proxy configuration. Replayed offline.
+    [byte[]]$realNoData=[Convert]::FromBase64String('LSGBgAABAAAAAQAAJHAydC0yZDIxNGNjODE3Njc0N2E2YWM4NmIwYmZjNWExZjM4YwdleGFtcGxlA2NvbQAAAQABwDEABgABAAAHCAAyB2VsbGlvdHQCbnMKY2xvdWRmbGFyZcA5A2Ruc8BZkB/QkAAAJxAAAAlgAAk6gAAABwg=')
+    $realName='p2t-2d214cc8176747a6ac86b0bfc5a1f38c.example.com'
+    $realResult=Test-P2TDnsResponse -Message $realNoData -TransactionId 11553 -Name $realName
+    Assert-Health ($realResult.Success -and $realResult.Classification -eq 'FreshDnsNoData') 'Real Cloudflare NOERROR/AN0/authority-SOA wire is valid NODATA'
+    Assert-Health (-not (Test-P2TDnsResponse -Message $realNoData -TransactionId 11554 -Name $realName).Success) 'NODATA still requires the exact transaction ID'
+    Assert-Health (-not (Test-P2TDnsResponse -Message $realNoData -TransactionId 11553 -Name 'different.example.com').Success) 'NODATA still requires the exact question'
+
+    [byte[]]$noData=New-NegativeDnsFixture
+    Assert-Health ((Test-P2TDnsResponse -Message $noData -TransactionId 1201 -Name 'p2t-test.example.com').Classification -eq 'FreshDnsNoData') 'Synthetic NOERROR with an ancestor-zone SOA is NODATA'
+    [byte[]]$bad=New-NegativeDnsFixture -SoaOwner 'unrelated.example.org'
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'Unrelated authority SOA cannot prove NODATA'
+    [byte[]]$bad=New-NegativeDnsFixture -SoaOwner 'ample.com'
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'SOA coverage requires a DNS label boundary, not a textual suffix'
+    [byte[]]$bad=New-NegativeDnsFixture -SoaOwner 'child.p2t-test.example.com'
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'A descendant-zone SOA cannot prove a negative for its parent name'
+    [byte[]]$bad=New-NegativeDnsFixture -SoaOwner 'unrelated.example.org' -RCode 3
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'NXDOMAIN also requires a covering authority SOA'
+    [byte[]]$bad=New-NegativeDnsFixture -SoaClass 3
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'Non-IN SOA cannot prove an IN NODATA answer'
+    [byte[]]$bad=$noData.Clone();$bad[9]=0;$bad[11]=1
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'Additional-section SOA does not substitute for authority SOA'
+    [byte[]]$bad=$noData.Clone();$bad[9]=0;$bad[7]=1
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'Answer-section SOA does not substitute for authority SOA'
+    [byte[]]$bad=New-P2TDnsQuery -TransactionId 1201 -Name 'p2t-test.example.com';$bad[2]=129;$bad[3]=128
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'Empty NOERROR response without SOA remains invalid for a fresh probe'
+    [byte[]]$bad=New-NegativeDnsFixture -RCode 2
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'SERVFAIL does not pass even with a valid covering SOA'
+    [byte[]]$bad=$noData.Clone();$bad[2]=131
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'Truncated NODATA response is rejected'
+    [byte[]]$bad=$noData[0..($noData.Length-2)]
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'NODATA requires complete SOA RDATA'
+    [byte[]]$bad=$noData+@(0)
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'NODATA rejects trailing bytes outside the declared records'
+    [byte[]]$query=New-P2TDnsQuery -TransactionId 1201 -Name 'p2t-test.example.com'
+    [byte[]]$bad=$noData.Clone();$bad[$query.Length-1]=3
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'NODATA question class must still be IN'
+    [byte[]]$bad=$noData.Clone();$bad[$query.Length-3]=28
+    Assert-Health (-not (Test-P2TDnsResponse -Message $bad -TransactionId 1201 -Name 'p2t-test.example.com').Success) 'NODATA question type must still match the A query'
 
     $now=[datetime]'2026-10-24T00:00:00Z'
     $recovery=New-P2TRecoveryState
@@ -147,9 +200,15 @@ public static class ProcessFixture {
     Assert-Health ($observed.Timeout -eq 5000 -and $observed.Arguments -contains '-EncodedCommand') 'OS DNS check runs in a bounded child process'
 
     & $healthModule {
-        $script:routePrefixes=@('0.0.0.0/1','128.0.0.0/1','::/1','8000::/1');$script:adapterStatus='Up';$script:adapterGuid='22222222-2222-2222-2222-222222222222'
-        function script:Get-NetAdapter {param($Name,[switch]$IncludeHidden,$ErrorAction) [pscustomobject]@{Name=$Name;InterfaceGuid=[guid]$script:adapterGuid;Status=$script:adapterStatus;ifIndex=99}}
-        function script:Get-NetRoute {param($InterfaceIndex,$ErrorAction) foreach($prefix in $script:routePrefixes){[pscustomobject]@{DestinationPrefix=$prefix}}}
+        $script:routePrefixes=@('0.0.0.0/1','128.0.0.0/1','::/1','8000::/1');$script:adapterStatus='Up';$script:adapterGuid='22222222-2222-2222-2222-222222222222';$script:routeInterfaceIndex=99
+        $script:adapterName='p2t-0123456789';$script:omittedAdapterField=''
+        function script:Get-NetAdapter {
+            param($Name,[switch]$IncludeHidden,$ErrorAction)
+            $fields=[ordered]@{Name=$script:adapterName;InterfaceGuid=$script:adapterGuid;Status=$script:adapterStatus;ifIndex=99}
+            if($script:omittedAdapterField){$fields.Remove($script:omittedAdapterField)}
+            [pscustomobject]$fields
+        }
+        function script:Get-NetRoute {param($InterfaceIndex,$ErrorAction) foreach($prefix in $script:routePrefixes){[pscustomobject]@{DestinationPrefix=$prefix;InterfaceIndex=$script:routeInterfaceIndex}}}
     }
     $routeParams=@{InterfaceName='p2t-0123456789';AdapterGuid='22222222-2222-2222-2222-222222222222'}
     Assert-Health ((Test-P2TOwnedTunRoutes @routeParams).Success) 'Both split routes for each address family prove owned TUN coverage'
@@ -157,10 +216,78 @@ public static class ProcessFixture {
     Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'One split route per family cannot prove TUN coverage'
     & $healthModule {$script:routePrefixes=@('0.0.0.0/0','::/0')}
     Assert-Health ((Test-P2TOwnedTunRoutes @routeParams).Success) 'Owned default routes for both address families prove TUN coverage'
+    # Config.psm1 excludes only IPv4 127/8 and IPv6 ::1/128. A route manager
+    # may express the remaining full space using many CIDRs, not a /1 pair.
+    $excludedLoopbackV4=@('0.0.0.0/2','64.0.0.0/3','96.0.0.0/4','112.0.0.0/5','120.0.0.0/6','124.0.0.0/7','126.0.0.0/8','128.0.0.0/1')
+    $excludedLoopbackV6=@('::/128')
+    for($bit=1;$bit -lt 128;$bit++){
+        [byte[]]$address=New-Object byte[] 16
+        $address[15-($bit -shr 3)]=[byte](1 -shl ($bit -band 7))
+        $excludedLoopbackV6+=([Net.IPAddress]::new($address).ToString()+'/'+(128-$bit))
+    }
+    & $healthModule {param($prefixes) $script:routePrefixes=$prefixes} ($excludedLoopbackV4+$excludedLoopbackV6)
+    Assert-Health ((Test-P2TOwnedTunRoutes @routeParams).Success) 'Full owned route union excluding only generated loopbacks is ready'
+    & $healthModule {param($prefixes) $script:routePrefixes=$prefixes} (@($excludedLoopbackV4 | Where-Object {$_ -ne '126.0.0.0/8'})+$excludedLoopbackV6)
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'Missing one IPv4 non-loopback segment cannot pass route coverage'
+    & $healthModule {param($prefixes) $script:routePrefixes=$prefixes} ($excludedLoopbackV4+@($excludedLoopbackV6 | Where-Object {$_ -ne '2000::/3'}))
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'Missing one IPv6 public segment cannot pass route coverage'
+    & $healthModule {$script:routePrefixes=@('127.0.0.0/8','::1/128')}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'Only loopback routes do not cover forwarding traffic'
+    & $healthModule {$script:routePrefixes=@('0.0.0.0/3','128.0.0.0/3','::/0')}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'Two unrelated IPv4 routes cannot stand in for full coverage'
+    & $healthModule {$script:routePrefixes=@('0.0.0.0/0')}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'IPv4-only routes do not satisfy the generated dual-stack TUN'
+    & $healthModule {$script:routePrefixes=@('::/0')}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'IPv6-only routes do not satisfy the generated dual-stack TUN'
+    & $healthModule {$script:routePrefixes=@('0.0.0.0/0','::/1','8000::/1')}
+    Assert-Health ((Test-P2TOwnedTunRoutes @routeParams).Success) 'IPv4 default plus IPv6 split routes cover both families'
+    & $healthModule {$script:routePrefixes=@('0.0.0.0/1','128.0.0.0/1','::/0')}
+    Assert-Health ((Test-P2TOwnedTunRoutes @routeParams).Success) 'IPv4 split plus IPv6 default routes cover both families'
+    & $healthModule {param($prefixes) $script:routePrefixes=@($prefixes+$prefixes) | Sort-Object -Descending} ($excludedLoopbackV4+$excludedLoopbackV6)
+    Assert-Health ((Test-P2TOwnedTunRoutes @routeParams).Success) 'Duplicate and unsorted CIDRs do not change complete route coverage'
+    [byte[]]$prefixAddress=New-Object byte[] 16
+    $missingLastV6=@('0.0.0.0/0')
+    for($prefixLength=1;$prefixLength -le 128;$prefixLength++){
+        $missingLastV6+=([Net.IPAddress]::new($prefixAddress).ToString()+'/'+$prefixLength)
+        $bit=$prefixLength-1
+        $prefixAddress[$bit -shr 3]=[byte]($prefixAddress[$bit -shr 3] -bor (1 -shl (7-($bit -band 7))))
+    }
+    & $healthModule {param($prefixes) $script:routePrefixes=$prefixes} $missingLastV6
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'A single uncovered highest IPv6 address is not rounded into full coverage'
+    $maximum=& $healthModule {(ConvertTo-P2TRouteInterval -Prefix '8000::/1' -AddressBits 128).End.ToString()}
+    Assert-Health ($maximum -eq '340282366920938463463374607431768211455') 'IPv6 interval arithmetic retains the exact unsigned 128-bit maximum'
+    & $healthModule {$script:routePrefixes=@('0.0.0.0/0','::/0');$script:routeInterfaceIndex=100}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'Full route coverage belonging to another interface cannot pass'
+    & $healthModule {$script:routeInterfaceIndex=$null}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'Missing route-interface metadata cannot prove TUN ownership'
+    & $healthModule {$script:routeInterfaceIndex=99;$script:routePrefixes=@('0.0.0.0/0','::/129')}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'Malformed IPv6 prefix length fails closed'
+    & $healthModule {$script:routePrefixes=@()}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'An empty route table cannot pass using the allowed loopback holes'
+    & $healthModule {$script:routePrefixes=@('0.0.0.0/0','::/0')}
     & $healthModule {$script:adapterStatus='Down'}
     Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'A down TUN adapter cannot pass even with recorded routes'
     & $healthModule {$script:adapterStatus='Up';$script:adapterGuid='33333333-3333-3333-3333-333333333333'}
     Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'Adapter name reuse with a different GUID cannot pass ownership'
+    & $healthModule {$script:adapterGuid='22222222-2222-2222-2222-222222222222';$script:adapterName='AnotherAdapter'}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'Matching GUID cannot borrow complete routes from a differently named adapter'
+    & $healthModule {$script:adapterName='P2T-0123456789'}
+    Assert-Health ((Test-P2TOwnedTunRoutes @routeParams).Success) 'Adapter name comparison follows Windows case-insensitive identity'
+    & $healthModule {$script:adapterName=''}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'Empty returned adapter name fails closed'
+    & $healthModule {$script:adapterName='p2t-0123456789';$script:adapterGuid='00000000-0000-0000-0000-000000000000'}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'An empty returned adapter GUID cannot prove ownership'
+    Assert-Health (-not (Test-P2TOwnedTunRoutes -InterfaceName $routeParams.InterfaceName -AdapterGuid ([guid]::Empty.ToString())).Success) 'Matching empty expected and returned GUIDs cannot prove ownership'
+    & $healthModule {$script:adapterGuid='not-a-guid'}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) 'Malformed returned adapter GUID fails closed'
+    & $healthModule {$script:adapterGuid='22222222-2222-2222-2222-222222222222'}
+    Assert-Health (-not (Test-P2TOwnedTunRoutes -InterfaceName $routeParams.InterfaceName -AdapterGuid 'not-a-guid').Success) 'Malformed expected adapter GUID fails closed'
+    Assert-Health ((Test-P2TOwnedTunRoutes -InterfaceName $routeParams.InterfaceName -AdapterGuid ('{'+$routeParams.AdapterGuid+'}')).Success) 'Valid alternate GUID formatting compares by GUID value'
+    foreach($missingField in @('Name','InterfaceGuid','Status','ifIndex')){
+        & $healthModule {param($field) $script:omittedAdapterField=$field} $missingField
+        Assert-Health (-not (Test-P2TOwnedTunRoutes @routeParams).Success) ('Missing adapter '+$missingField+' cannot prove ownership')
+    }
+    & $healthModule {$script:omittedAdapterField=''}
 
     & $healthModule {
         $script:fixtureDns='192.0.2.53';$script:fixtureGateway='192.0.2.1';$script:fixtureIp='192.0.2.2';$script:fixtureMetric=10;$script:fixtureUp=$true;$script:queriedIndexes=@()

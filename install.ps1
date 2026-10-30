@@ -13,10 +13,10 @@ $assetSha256 = 'c2d8bfff918755808781dfdeeb8581b6c91eb3a243d9a7b55483cfc0c0684d32
 $sourceFiles = @(
     'Start-Bridge.ps1', 'Stop-Bridge.ps1', 'Stop-Misty-TUN.ps1', 'Show-Logs.ps1',
     'Start-Bridge.cmd', 'Stop-Bridge.cmd', 'install.ps1', 'uninstall.ps1',
-    'README.md', 'CHANGELOG.md', 'RELEASE_NOTES.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', '.gitignore',
+    'README.md', 'CHANGELOG.md', 'RELEASE_NOTES.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', '.gitignore', 'VERSION',
     'src/Discovery.psm1', 'src/Config.psm1', 'src/Lifecycle.psm1', 'src/Health.psm1', 'src/NativeProcess.cs',
     'tools/Repair-LegacyScriptEncoding.ps1',
-    'docs/architecture.md', 'docs/troubleshooting.md', 'docs/validation.md'
+    'docs/architecture.md', 'docs/troubleshooting.md', 'docs/validation.md', 'docs/field-debug.md'
 )
 
 function Assert-NoReparseAncestor([string]$Path) {
@@ -50,6 +50,8 @@ foreach ($relative in $sourceFiles) {
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Source package is incomplete: $relative" }
     Assert-NoReparseAncestor $source
 }
+$projectVersion = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'VERSION')).Trim()
+if ($projectVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Source package VERSION is invalid.' }
 
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('Proxy2TUN-install-' + [Guid]::NewGuid().ToString('N'))
 $archivePath = Join-Path $stage 'sing-box.zip'
@@ -116,7 +118,7 @@ try {
         [ordered]@{ path = $relative; sha256 = (Get-FileHash -LiteralPath (Join-Path $target $relative) -Algorithm SHA256).Hash.ToLowerInvariant() }
     })
     $manifest = [ordered]@{
-        project = 'Proxy2TUN-AutoBridge'; schemaVersion = 1; version = '0.2.0'
+        project = 'Proxy2TUN-AutoBridge'; schemaVersion = 1; version = $projectVersion
         installRoot = $target; createdUtc = [DateTime]::UtcNow.ToString('o'); files = $records
     }
     $marker = Join-Path $target '.proxy2tun-install.json'

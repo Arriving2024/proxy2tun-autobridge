@@ -1,16 +1,26 @@
 # Proxy2TUN AutoBridge
 
-**v0.2.0 · 实验性预发布 · Windows 11 x64 · 前台运行 · MIT**
+**v0.2.1 · 实验性预发布 · Windows 11 x64 · 前台运行 · MIT**
 
 把 Windows 本机可用的 SOCKS5 / HTTP CONNECT 代理接到 sing-box TUN。自动检测本地代理、生成配置并监控连接；停止后撤销本工具的 TUN 接管。默认不安装服务、计划任务或开机启动项，不修改 Windows System Proxy。
 
-实际仓库是 [Arriving2024/proxy2tun-autobridge](https://github.com/Arriving2024/proxy2tun-autobridge)。本次从已发布的 **v0.1.0**（`35f73bb`）继续开发 v0.2.0；发行状态与下载以仓库 [Releases](https://github.com/Arriving2024/proxy2tun-autobridge/releases) 为准。
+实际仓库是 [Arriving2024/proxy2tun-autobridge](https://github.com/Arriving2024/proxy2tun-autobridge)。本次从已发布的 **v0.2.0**（`4899d18`）继续开发兼容补丁 v0.2.1；发行状态与下载以仓库 [Releases](https://github.com/Arriving2024/proxy2tun-autobridge/releases) 为准。
 
 Misty 是用户手动验证成功的首个适配案例。通用版本按检测到的协议、地址、端口生成 `upstream` 出站，DNS 的 `detour` 引用这个出站，**不要求 Misty 或固定的 10808 端口**。用户提供的手动恢复记录与新封装测试范围分别记在 [验证记录](docs/validation.md)。
 
 本次用户提供的 Windows 11 复现记录：`socks5h` 访问 `https://chatgpt.com` 约 0.4 秒返回 HTTP 403 / `Cf-Mitigated: challenge`；`socks5` 使用本地 DNS 时 timeout；旧 TUN 为 HTTP 000 / reset。重建 TUN 并接管 DoH 后，`Resolve-DnsName -Type A` 正常，HTTPS 返回 HTTP 403（0.476090 秒），用户确认 Remote 恢复。**这是手动方案的用户记录，不能替代新版封装的实机验收。**
 
-## v0.2.0 的变化
+## v0.2.1 修复了什么
+
+- 指定 `-ProxyEndpoint` 后直接核验该地址、端口和协议，避免先扫描其他监听端口。
+- 代理归属依据保持中的真实连接核验，处理 Windows 监听表 PID 0、重复记录和过滤漏项。无法确认归属时保守拒绝。
+- 路由检查验证两族 CIDR 并集的完整覆盖，允许生成配置明确排除的回环地址；继续拒绝公网覆盖缺失、网卡归属不符或仅部分路由。
+- 新 DNS 探针正确识别有完整、相关 SOA 的合法 NODATA，避免健康连接被判失败并撤销。
+- 朋友部署、本机修补、自动测试和新版待完成的实机验收分开记录，见 [现场调试记录](docs/field-debug.md)。
+
+保留 Detect / Generate / Watch、并排升级、归属核验停止和有限恢复。v0.2.1 仍是实验性预发布。
+
+## v0.2.0 已有能力
 
 - 为 sing-box 1.14.x TUN 启用 `dns_mode: hijack`。默认 DoH 使用 `1.1.1.1:443`、TLS SNI `cloudflare-dns.com`、`/dns-query`，通过选中的本地代理转发。
 - 用精确核心进程路径、loopback 路由排除和底层接口检测降低 DNS / 路由回环风险。系统 DNS 引导直连仅作为显式兼容选项，见 [架构](docs/architecture.md)。
@@ -31,7 +41,7 @@ Misty 是用户手动验证成功的首个适配案例。通用版本按检测�
 
 需要 Windows 11 x64、64 位 Windows PowerShell 5.1 或更新版本，以及本地代理客户端。安装通常无需管理员权限；开启和停止 TUN 需要管理员权限。
 
-1. 在 [Releases](https://github.com/Arriving2024/proxy2tun-autobridge/releases) 选择 v0.2.0 预发布，下载 `Proxy2TUN-AutoBridge-v0.2.0-windows-x64-source.zip` 和 `SHA256SUMS.txt`，核对 ZIP 的 SHA-256 后解压。
+1. 在 [Releases](https://github.com/Arriving2024/proxy2tun-autobridge/releases) 选择 v0.2.1 预发布，下载 `Proxy2TUN-AutoBridge-v0.2.1-windows-x64-source.zip` 和 `SHA256SUMS.txt`，核对 ZIP 的 SHA-256 后解压。
 2. 升级时，先用**旧安装目录自己的** `Stop-Bridge.ps1` 停止旧 AutoBridge。若正在使用原有手工 TUN，在准备正式切换前保留其正常连接；正式切换时用它自己的停止方式退出。不要运行两个 TUN。
 3. 在新解压的源码目录执行安装。新用户可使用默认目录：
 
@@ -42,7 +52,7 @@ Misty 是用户手动验证成功的首个适配案例。通用版本按检测�
    从旧版升级应并排安装到新目录，保留旧目录用于回退：
 
    ```powershell
-   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir "$env:LOCALAPPDATA\Proxy2TUN-AutoBridge-v0.2.0"
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir "$env:LOCALAPPDATA\Proxy2TUN-AutoBridge-v0.2.1"
    ```
 
 4. 进入新安装目录，启动原代理客户端。先运行下面的 Detect / Generate 检查。正式切换前正常停止其他 TUN，再右键 `Start-Bridge.cmd` → **以管理员身份运行**，保留前台窗口。
@@ -130,7 +140,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-All.ps1
 # Include official configuration and isolated install/uninstall checks:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-All.ps1 -SingBoxPath 'C:\Tools\sing-box.exe'
 # Stage intended new source files before building:
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Build-Release.ps1 -OutputDirectory 'C:\ReleaseOutput\v0.2.0'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Build-Release.ps1 -OutputDirectory 'C:\ReleaseOutput\v0.2.1'
 ```
 
 构建只取 Git 已跟踪的显式白名单源码，校验 PowerShell 编码，生成 ZIP、逐文件清单和 SHA-256，并重新读取最终 ZIP 核对每个文件。已有同名输出会拒绝覆盖。构建不等于测试通过或发布成功。

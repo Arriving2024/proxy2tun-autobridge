@@ -11,10 +11,10 @@ if (-not $InstallDir) { $InstallDir = $PSScriptRoot }
 $allowedFiles = @(
     'Start-Bridge.ps1', 'Stop-Bridge.ps1', 'Stop-Misty-TUN.ps1', 'Show-Logs.ps1',
     'Start-Bridge.cmd', 'Stop-Bridge.cmd', 'install.ps1', 'uninstall.ps1',
-    'README.md', 'CHANGELOG.md', 'RELEASE_NOTES.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', '.gitignore',
+    'README.md', 'CHANGELOG.md', 'RELEASE_NOTES.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', '.gitignore', 'VERSION',
     'src/Discovery.psm1', 'src/Config.psm1', 'src/Lifecycle.psm1', 'src/Health.psm1', 'src/NativeProcess.cs',
     'tools/Repair-LegacyScriptEncoding.ps1',
-    'docs/architecture.md', 'docs/troubleshooting.md', 'docs/validation.md', 'bin/sing-box.exe'
+    'docs/architecture.md', 'docs/troubleshooting.md', 'docs/validation.md', 'docs/field-debug.md', 'bin/sing-box.exe'
 )
 
 function Assert-OwnedPath([string]$Path, [string]$Root) {
