@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 [CmdletBinding()]
 param(
     [ValidateSet('Detect','Generate','Watch')][string]$Mode='Watch',
@@ -13,7 +13,8 @@ param(
     [ValidateRange(1,60)][int]$NetworkDebounceSeconds=6,
     [ValidateRange(0,10)][int]$MaxRecoveryAttempts=3,
     [ValidateRange(1,120)][int]$RecoveryBaseSeconds=10,
-    [ValidateRange(30,3600)][int]$HealthyResetSeconds=300
+    [ValidateRange(30,3600)][int]$HealthyResetSeconds=300,
+    [switch]$DesktopMode
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -35,6 +36,12 @@ if($LASTEXITCODE -ne 0 -or $version -notmatch 'sing-box version 1\.14\.2(?:\s|$)
 $runtime=Join-Path $PSScriptRoot 'runtime'
 $null=New-Item -ItemType Directory -Force -Path $runtime
 $configPath=Join-Path $runtime 'config.json'
+if($DesktopMode){Import-Module (Join-Path $PSScriptRoot 'src\Desktop.psm1') -Force}
+function Save-BridgeState {
+    param($State,[string]$Path)
+    Write-P2TState -State $State -Path $Path
+    if($DesktopMode){try{Sync-P2TDesktopStatus -State $State -RuntimePath $runtime}catch{[Console]::Error.WriteLine('Desktop status update unavailable; network cleanup remains enabled.')}}
+}
 if($Mode -eq 'Generate'){
     $candidate=Select-P2TProxyCandidate -Candidates @(Get-P2TProxyCandidates @selection) @selection
     if(-not $candidate){throw 'No compatible proxy detected. Start your proxy client and retry.'}
@@ -63,7 +70,7 @@ function Write-RecoveryState {
         $state.Status='Backoff'
         Write-P2TLog -Path $logPath -Message ('Recovery {0}/{1}: {2}; retry in {3}s. Owned TUN released.' -f $recovery.Failures,$MaxRecoveryAttempts,$Reason,$recovery.DelaySeconds)
     }
-    Write-P2TState -State $state -Path $statePath
+    Save-BridgeState -State $state -Path $statePath
 }
 
 try {
@@ -78,11 +85,12 @@ try {
     }
     if(Get-Process -Name 'sing-box' -ErrorAction SilentlyContinue){throw 'An existing sing-box is running. Stop the other TUN through its own controls before starting AutoBridge.'}
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
-    $state=[ordered]@{Schema=1;Root=$PSScriptRoot;Owner=(Get-P2TProcessStamp $PID);Child=$null;InterfaceName=$null;AdapterGuid=$null;Status='Waiting';RecoveryFailures=0}
-    Write-P2TState -State $state -Path $statePath
-    Write-P2TLog -Path $logPath -Message 'Proxy2TUN AutoBridge v0.2.1. Foreground watcher; DNS and HTTPS checks enabled. Ctrl+C or Stop-Bridge stops it.'
+    $state=[ordered]@{Schema=1;Root=$PSScriptRoot;Owner=(Get-P2TProcessStamp $PID);DesktopMode=[bool]$DesktopMode;Child=$null;InterfaceName=$null;AdapterGuid=$null;Status='Waiting';RecoveryFailures=0}
+    Save-BridgeState -State $state -Path $statePath
+    Write-P2TLog -Path $logPath -Message 'Proxy2TUN AutoBridge v0.3.0. Watcher; DNS and HTTPS checks enabled. Ctrl+C or Stop-Bridge stops it.'
     $network=New-P2TNetworkObservation -Snapshot (Get-P2TNetworkFingerprint)
     $candidate=$null;$misses=0;$tunMisses=0;$forwardingMisses=0;$lastNotice='';$scanAt=[DateTime]::MinValue;$healthAt=[DateTime]::MinValue;$lastHealth=''
+    if($DesktopMode){Write-P2TDesktopStatus -RuntimePath $runtime -Status 'Scanning' -Message '正在识别本机代理软件。'}
     while(-not (Test-Path -LiteralPath $stopPath)){
         if([DateTime]::UtcNow -lt $scanAt){Start-Sleep -Milliseconds 200;continue}
         $scanAt=[DateTime]::UtcNow.AddSeconds($PollSeconds)
@@ -110,6 +118,7 @@ try {
                     $summary='{0}; {1}; HTTPS {2}, HTTP {3}, curl {4}' -f $health.Dns.Classification,$health.FreshDns.Classification,$health.Https.Classification,$health.Https.HttpStatus,$health.Https.CurlExitCode
                     if($health.Success){$forwardingMisses=0;Register-P2TRecoverySuccess -State $recovery -HealthyResetSeconds $HealthyResetSeconds}
                     else{$forwardingMisses++;$recovery.HealthySince=$null}
+                    if($DesktopMode){$state.LastHealthPassed=[bool]$health.Success;$state.LastHealthUtc=[DateTime]::UtcNow.ToString('o');Save-BridgeState -State $state -Path $statePath}
                     if($summary -ne $lastHealth -or -not $health.Success){Write-P2TLog -Path $logPath -Message ('Forwarding check: '+$summary);$lastHealth=$summary}
                     if($forwardingMisses -ge $LossThreshold){$failure='TunAliveButForwardingFailed'}
                 }
@@ -127,7 +136,9 @@ try {
             continue
         }
         try{
-            $candidate=Select-P2TProxyCandidate -Candidates @(Get-P2TProxyCandidates @selection) @selection
+            if($DesktopMode){
+                $candidate=Select-P2TDesktopCandidate -Candidates @(Get-P2TProxyCandidates @selection -IncludeEstablished) -RuntimePath $runtime
+            }else{$candidate=Select-P2TProxyCandidate -Candidates @(Get-P2TProxyCandidates @selection) @selection}
             if(-not $candidate -or -not (Test-P2TProcessIdentity -Candidate $candidate)){continue}
             if(Get-Process -Name 'sing-box' -ErrorAction SilentlyContinue){throw 'AnotherCorePresent'}
             $state.InterfaceName='p2t-'+[guid]::NewGuid().ToString('N').Substring(0,10)
@@ -137,15 +148,20 @@ try {
             $transaction=Set-P2TSingBoxConfig -Config $config -Path $configPath -SingBoxPath $SingBoxPath
             if(Test-Path -LiteralPath $stopPath){break}
             if(-not (Test-P2TProcessIdentity -Candidate $candidate)){throw 'UpstreamChangedBeforeStart'}
-            $state.Status='Starting';Write-P2TState -State $state -Path $statePath
-            $child=New-Object Proxy2Tun.OwnedProcess($SingBoxPath,('run -c "'+$configPath+'"'),(Split-Path $SingBoxPath))
+            if($DesktopMode){
+                $state.ProxyDisplayName=if($candidate.ParentName){$candidate.ParentName}else{$candidate.ProcessName}
+                $state.ProxyEndpoint=Get-P2TDesktopEndpoint $candidate
+            }
+            $state.Status='Starting';Save-BridgeState -State $state -Path $statePath
+            if($DesktopMode){$child=New-Object Proxy2Tun.OwnedProcess($SingBoxPath,('run -c "'+$configPath+'"'),(Split-Path $SingBoxPath),$true)}
+            else{$child=New-Object Proxy2Tun.OwnedProcess($SingBoxPath,('run -c "'+$configPath+'"'),(Split-Path $SingBoxPath))}
             $state.Child=[ordered]@{Id=$child.Id;Path=$SingBoxPath;StartFileTime=$child.StartFileTime.ToString()}
-            Write-P2TState -State $state -Path $statePath
+            Save-BridgeState -State $state -Path $statePath
             $readyUntil=[DateTime]::UtcNow.AddSeconds(12);$adapter=$null;$tunReady=$false
             while(-not $child.HasExited -and [DateTime]::UtcNow -lt $readyUntil -and -not (Test-Path -LiteralPath $stopPath)){
                 $adapter=Get-NetAdapter -Name $state.InterfaceName -IncludeHidden -ErrorAction SilentlyContinue
                 if($adapter){
-                    $state.AdapterGuid=$adapter.InterfaceGuid.ToString();Write-P2TState -State $state -Path $statePath
+                    $state.AdapterGuid=$adapter.InterfaceGuid.ToString();Save-BridgeState -State $state -Path $statePath
                     $tunReady=(Test-P2TOwnedTunRoutes -InterfaceName $state.InterfaceName -AdapterGuid $state.AdapterGuid).Success
                     if($tunReady){break}
                 }
@@ -153,7 +169,7 @@ try {
             }
             if(Test-Path -LiteralPath $stopPath){break}
             if(-not $adapter -or $child.HasExited -or -not $state.AdapterGuid -or -not $tunReady){throw 'TunRoutesNotReady'}
-            $state.Status='Verifying';Write-P2TState -State $state -Path $statePath
+            $state.Status='Verifying';Save-BridgeState -State $state -Path $statePath
             $verifyUntil=[DateTime]::UtcNow.AddSeconds($StartupGraceSeconds)
             do{
                 $health=Test-P2TForwardingHealth -RuntimePath $runtime
@@ -165,7 +181,8 @@ try {
             if(Test-Path -LiteralPath $stopPath){break}
             if(-not $health.Success -or $child.HasExited -or -not (Test-P2TOwnedTunRoutes -InterfaceName $state.InterfaceName -AdapterGuid $state.AdapterGuid).Success){throw 'StartupDnsOrHttpsVerificationFailed'}
             $transaction=$null
-            $state.Status='Running';$state.RecoveryFailures=$recovery.Failures;Write-P2TState -State $state -Path $statePath
+            if($DesktopMode){$state.LastHealthPassed=$true;$state.LastHealthUtc=[DateTime]::UtcNow.ToString('o')}
+            $state.Status='Running';$state.RecoveryFailures=$recovery.Failures;Save-BridgeState -State $state -Path $statePath
             Register-P2TRecoverySuccess -State $recovery -HealthyResetSeconds $HealthyResetSeconds
             $healthAt=[DateTime]::UtcNow.AddSeconds([Math]::Max($HealthIntervalSeconds,$StartupGraceSeconds))
             $misses=0;$tunMisses=0;$forwardingMisses=0;$lastNotice=''
@@ -185,7 +202,7 @@ try {
     try{
         if($state){Stop-P2TOwnedChild -Child $child -State $state -StatePath $statePath -LogPath $logPath;$child=$null}
         if($transaction){Restore-P2TSingBoxConfig -Transaction $transaction;$transaction=$null}
-        if($state){$state.Status='Stopped';Write-P2TState -State $state -Path $statePath}
+        if($state){$state.Status='Stopped';Save-BridgeState -State $state -Path $statePath}
     }finally{
         if($child){$child.Dispose()};if($lockFile){$lockFile.Dispose()};if($locked){$mutex.ReleaseMutex()};$mutex.Dispose()
     }

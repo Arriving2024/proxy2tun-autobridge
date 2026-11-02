@@ -24,7 +24,9 @@ if ((Test-P2TStamp $state.Owner) -or ($state.Child -and (Test-P2TStamp $state.Ch
     if (Test-P2TStamp $state.Owner) {
         $owner=Get-CimInstance Win32_Process -Filter ('ProcessId={0}' -f $state.Owner.Id)
         if ($owner -and (Test-P2TStamp $state.Owner)) {
-            if (-not $owner.CommandLine -or $owner.CommandLine.IndexOf((Join-Path $PSScriptRoot 'Start-Bridge.ps1'),[StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'Watcher command identity mismatch; refusing forced stop.' }
+            $isWatcher=$owner.CommandLine -and $owner.CommandLine.IndexOf((Join-Path $PSScriptRoot 'Start-Bridge.ps1'),[StringComparison]::OrdinalIgnoreCase) -ge 0
+            $isDesktop=$state.PSObject.Properties['DesktopMode'] -and $state.DesktopMode -eq $true -and $owner.CommandLine -and $owner.CommandLine.IndexOf((Join-Path $PSScriptRoot 'desktop\Backend.ps1'),[StringComparison]::OrdinalIgnoreCase) -ge 0 -and $owner.CommandLine -match '(?i)(?:^|\s)"?-Action"?\s+"?Run"?(?:\s|$)'
+            if (-not ($isWatcher -or $isDesktop)) { throw 'Watcher command identity mismatch; refusing forced stop.' }
             if (-not [Proxy2Tun.OwnedProcess]::StopVerified($state.Owner.Id,[long]$state.Owner.StartFileTime,$state.Owner.Path) -and (Test-P2TStamp $state.Owner)) { throw 'Could not stop verified watcher.' }
         }
     }

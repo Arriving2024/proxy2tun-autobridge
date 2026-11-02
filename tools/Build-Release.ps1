@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$')]
-    [string]$Version = 'v0.2.1',
+    [string]$Version = 'v0.3.0',
     [string]$OutputDirectory
 )
 Set-StrictMode -Version Latest
@@ -27,11 +27,12 @@ $rootAllow = @(
 )
 $releaseAllow = @($rootAllow + @(
     'src/Config.psm1', 'src/Discovery.psm1', 'src/Health.psm1', 'src/Lifecycle.psm1', 'src/NativeProcess.cs',
+    'src/Desktop.psm1', 'src/DesktopApp.cs', 'desktop/Backend.ps1',
     'tests/Test-All.ps1', 'tests/Test-ConfigTransaction.ps1', 'tests/Test-DiscoveryConfig.ps1',
     'tests/Test-Encoding.ps1', 'tests/Test-Health.ps1', 'tests/Test-Install.ps1', 'tests/Test-Lifecycle.ps1',
-    'tests/Test-NetworkCleanup.ps1', 'tests/Test-Watcher.ps1', 'tests/fixtures/Lifecycle-Child.ps1', 'tests/fixtures/ProbeServer.cs',
-    'docs/architecture.md', 'docs/troubleshooting.md', 'docs/validation.md', 'docs/field-debug.md',
-    'tools/Build-Release.ps1', 'tools/Repair-LegacyScriptEncoding.ps1',
+    'tests/Test-NetworkCleanup.ps1', 'tests/Test-Watcher.ps1', 'tests/Test-Desktop.ps1', 'tests/fixtures/Lifecycle-Child.ps1', 'tests/fixtures/ProbeServer.cs',
+    'docs/architecture.md', 'docs/troubleshooting.md', 'docs/validation.md', 'docs/field-debug.md', 'docs/desktop.md',
+    'tools/Build-Release.ps1', 'tools/Repair-LegacyScriptEncoding.ps1', 'tools/Build-Desktop.ps1',
     '.github/workflows/windows-checks.yml', '.github/workflows/release.yml'
 ))
 $sources = New-Object 'Collections.Generic.List[string]'

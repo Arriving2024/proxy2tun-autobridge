@@ -161,6 +161,16 @@ Assert-Throws { New-P2TSingBoxConfig -Candidate $socks -InterfaceName p2t-test -
 $extraExe = (Get-Process -Id $PID).Path
 $extraConfig = New-P2TSingBoxConfig -Candidate $socks -InterfaceName p2t-test -ExtraDirectProcessPath $extraExe
 Assert-True ($extraConfig.route.rules[0].process_path -contains $extraExe) 'Explicit existing helper path is accepted'
+$chainedHttp=New-Candidate -Owner 101 -Protocol http -Port 10809
+$chainedHttp.ProcessPath='C:\Apps\Misty\temp\http.exe'
+$delegate=New-Candidate
+$chainedHttp | Add-Member NoteProperty RelatedDirectProcesses @($delegate)
+$chainConfig=New-P2TSingBoxConfig -Candidate $chainedHttp -InterfaceName p2t-chain-test
+Assert-True ($chainConfig.route.rules[0].process_path -contains $delegate.ProcessPath -and $chainConfig.route.rules[0].process_path -contains $chainedHttp.ProcessPath) 'Verified HTTP-to-SOCKS delegation bypasses both exact executable paths'
+$delegate.ParentProcessId=199
+Assert-Throws {New-P2TSingBoxConfig -Candidate $chainedHttp -InterfaceName p2t-chain-test} 'Unrelated delegated process cannot enter the exact-path bypass'
+$delegate.ParentProcessId=99;$delegate.ProcessPath='C:\Unrelated\core.exe'
+Assert-Throws {New-P2TSingBoxConfig -Candidate $chainedHttp -InterfaceName p2t-chain-test} 'Same parent token cannot authorize paths outside its installation'
 
 $temporaryConfig = [IO.Path]::GetTempFileName()
 try {
@@ -197,17 +207,20 @@ try {
     function script:Get-P2TSystemProxyEndpoints {return $script:systemEndpoints}
     function script:Get-NetTCPConnection {param($State,$ErrorAction) $script:listenCalls++;if($script:throwListen){throw 'Fixture listener table unavailable.'};return $script:listenerRows}
     function script:Test-P2TProxyEndpoint {
-        param($ProxyHost,$ProxyPort,$Protocol,$TimeoutMs,$ProbeAddress,$ProbePort,[switch]$RequireIdentity)
+        param($ProxyHost,$ProxyPort,$Protocol,$TimeoutMs,$ProbeAddress,$ProbePort,[switch]$RequireIdentity,[switch]$InspectRelated)
         if(-not $RequireIdentity){throw 'Discovery omitted connected-owner verification.'}
         $script:probeCalls.Add(('{0}|{1}|{2}' -f $ProxyHost,$ProxyPort,$Protocol))
         $ok=$script:protocols.ContainsKey([int]$ProxyPort) -and $script:protocols[[int]$ProxyPort] -eq $Protocol
-        [pscustomobject]@{Success=$ok;Identity=$(if($ok -and -not $script:unknownOwner){$script:discoveryIdentity}else{$null});Reason='Fixture'}
+        if($InspectRelated){$script:relatedInspections++}
+        [pscustomobject]@{Success=$ok;Identity=$(if($ok -and -not $script:unknownOwner){$script:discoveryIdentity}else{$null});Reason='Fixture';RelatedDirectProcesses=@()}
     }
 } (New-Candidate)
 & $discoveryModule {$script:throwListen=$true;$script:protocols=@{32123='http'}}
 $found=@(Get-P2TProxyCandidates -ProxyHost localhost -ProxyPort 32123 -ProxyProtocol http)
 $observed=& $discoveryModule {[pscustomobject]@{ListenCalls=$script:listenCalls;Calls=@($script:probeCalls.ToArray())}}
 Assert-True ($found.Count -eq 1 -and $found[0].Host -eq '127.0.0.1' -and $found[0].Source -eq 'Explicit') 'Explicit endpoint is probed even without any listener-table entry'
+Assert-True (@($found[0].RelatedDirectProcesses).Count -eq 0) 'CLI candidates retain an empty related-process array instead of a null identity'
+Assert-True ((New-P2TSingBoxConfig -Candidate $found[0] -InterfaceName p2t-selected-test).outbounds[0].type -eq 'http') 'Default selected candidate still generates a usable configuration'
 Assert-True ($observed.ListenCalls -eq 0 -and $observed.Calls.Count -eq 1 -and $observed.Calls[0] -eq '127.0.0.1|32123|http') 'Explicit host/port/protocol avoid unrelated scans and protocol probes'
 Assert-Throws {Get-P2TProxyCandidates -ProxyHost 10.0.0.1 -ProxyPort 32123} 'Explicit remote proxy cannot enter discovery'
 & $discoveryModule {
@@ -231,6 +244,82 @@ $found=@(Get-P2TProxyCandidates -ProxyPort 10808 -ProxyProtocol socks5)
 Assert-True ($found.Count -eq 1 -and (& $discoveryModule {$script:probeCalls.Count}) -eq 1) 'Partial port/protocol filters also avoid probing unrelated endpoints'
 & $discoveryModule {$script:throwListen=$true}
 Assert-True (@(Get-P2TProxyCandidates -ProxyProtocol http).Count -eq 1) 'Unavailable listener table does not hide a verified system-proxy endpoint'
+& $discoveryModule {
+    $script:throwListen=$false;$script:systemEndpoints=@();$script:listenerRows=@();$script:relatedInspections=0;$script:probeCalls.Clear()
+    $script:establishedRows=@(
+        [pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=10808;RemoteAddress='127.0.0.1';RemotePort=64000;OwningProcess=0},
+        [pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=10808;RemoteAddress='127.0.0.1';RemotePort=64001;OwningProcess=100},
+        [pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=64000;RemoteAddress='127.0.0.1';RemotePort=10808;OwningProcess=101},
+        [pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=8080;RemoteAddress='192.0.2.1';RemotePort=64000;OwningProcess=200},
+        [pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=55000;RemoteAddress='127.0.0.1';RemotePort=64000;OwningProcess=201}
+    )
+    function script:Get-NetTCPConnection {param($State,$ErrorAction) if($State -eq 'Established'){return $script:establishedRows};return $script:listenerRows}
+}
+Assert-True (@(Get-P2TProxyCandidates -ProxyProtocol socks5).Count -eq 0) 'CLI discovery keeps Established fallback opt-in'
+$found=@(Get-P2TProxyCandidates -ProxyProtocol socks5 -IncludeEstablished)
+Assert-True ($found.Count -eq 1 -and $found[0].Port -eq 10808 -and $found[0].Source -eq 'EstablishedSeed') 'Desktop fallback can discover a missing listener from established loopback server seeds'
+Assert-True (@($found[0].RelatedDirectProcesses).Count -eq 0 -and (New-P2TSingBoxConfig -Candidate $found[0] -InterfaceName p2t-seeded-test).outbounds[0].type -eq 'socks') 'Direct SOCKS seed generates config with an empty related chain'
+Assert-True ((& $discoveryModule {$script:probeCalls.Count}) -eq 1 -and (& $discoveryModule {$script:relatedInspections}) -eq 1) 'Seed filtering deduplicates rows and requires held connection chain inspection'
+& $discoveryModule {$script:unknownOwner=$true}
+Assert-True (@(Get-P2TProxyCandidates -ProxyProtocol socks5 -IncludeEstablished).Count -eq 0) 'Established seed never substitutes for a verified live proxy owner'
+$discoveryModule=Import-Module (Join-Path $repository 'src\Discovery.psm1') -Force -PassThru
+
+# Process graph observed while the upstream probe is held: HTTP core delegates
+# to a same-install SOCKS sibling, not arbitrary children of the application.
+$httpIdentity=New-Candidate -Owner 101 -Protocol http -Port 10809
+$httpIdentity.ProcessPath='C:\Apps\Misty\temp\http.exe'
+$socksIdentity=New-Candidate
+$serverEndpoint=New-Object Net.IPEndPoint([Net.IPAddress]::Loopback,10809)
+$graph=@(
+    [pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=10809;RemoteAddress='127.0.0.1';RemotePort=57000;OwningProcess=101},
+    [pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=64000;RemoteAddress='127.0.0.1';RemotePort=10808;OwningProcess=101},
+    [pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=10808;RemoteAddress='127.0.0.1';RemotePort=64000;OwningProcess=100},
+    [pscustomobject]@{LocalAddress='192.0.2.1';LocalPort=65000;RemoteAddress='198.51.100.1';RemotePort=443;OwningProcess=100}
+)
+& $discoveryModule {param($identity) $script:delegateIdentity=$identity;function script:Get-P2TProcessIdentity {param($ProcessId) if($ProcessId -eq 100){return $script:delegateIdentity}}} $socksIdentity
+$delegates=@(& $discoveryModule {param($i,$r,$e) Get-P2TRelatedDirectProcesses -Identity $i -Connections $r -ServerEndpoint $e} $httpIdentity $graph $serverEndpoint)
+Assert-True ($delegates.Count -eq 1 -and $delegates[0].ProcessId -eq 100) 'Held-probe graph follows only an exact loopback four-tuple to its verified sibling core'
+$socksIdentity.ParentProcessId=199
+Assert-Throws {& $discoveryModule {param($i,$r,$e) Get-P2TRelatedDirectProcesses $i $r $e} $httpIdentity $graph $serverEndpoint} 'Delegation to another application parent is rejected'
+$socksIdentity.ParentProcessId=99
+$graph[2].OwningProcess=0
+Assert-Throws {& $discoveryModule {param($i,$r,$e) Get-P2TRelatedDirectProcesses $i $r $e} $httpIdentity $graph $serverEndpoint} 'Unknown delegated server owner is rejected instead of guessing from process existence'
+$graph[2].OwningProcess=100
+$socksIdentity.ProcessPath='C:\Other\core.exe'
+Assert-Throws {& $discoveryModule {param($i,$r,$e) Get-P2TRelatedDirectProcesses $i $r $e} $httpIdentity $graph $serverEndpoint} 'Delegated executable outside the same install cannot become a bypass'
+$socksIdentity.ProcessPath='C:\Apps\Misty\core\v2ray.exe'
+$ambiguous=@($graph+[pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=10808;RemoteAddress='127.0.0.1';RemotePort=64000;OwningProcess=102})
+Assert-Throws {& $discoveryModule {param($i,$r,$e) Get-P2TRelatedDirectProcesses $i $r $e} $httpIdentity $ambiguous $serverEndpoint} 'Conflicting delegated endpoint owners fail closed'
+& $discoveryModule {
+    param($root,$rows)
+    $script:rootIdentity=$root;$script:chainRows=$rows;$script:reportedOwner=$root.ProcessId
+    function script:Get-P2TConnectedProcessIdentity {param($Client) $script:heldChainClient=$Client;return $script:rootIdentity}
+    function script:Get-NetTCPConnection {
+        param($State,$ErrorAction)
+        $local=$script:heldChainClient.Client.RemoteEndPoint;$remote=$script:heldChainClient.Client.LocalEndPoint
+        [pscustomobject]@{LocalAddress=$local.Address.ToString();LocalPort=$local.Port;RemoteAddress=$remote.Address.ToString();RemotePort=$remote.Port;OwningProcess=$script:reportedOwner}
+        $script:chainRows
+    }
+} $httpIdentity @($graph | Select-Object -Skip 1)
+$server=New-Object P2TTests.ProbeServer('http-ok')
+try{
+    $probe=Test-P2TProxyEndpoint -ProxyHost 127.0.0.1 -ProxyPort $server.Port -Protocol http -InspectRelated
+    Assert-True ($probe.Success -and @($probe.RelatedDirectProcesses).Count -eq 1 -and $probe.RelatedDirectProcesses[0].ProcessId -eq 100) 'Real held HTTP protocol probe returns the verified delegated-core graph'
+}finally{$server.Dispose()}
+& $discoveryModule {$script:reportedOwner=102}
+$server=New-Object P2TTests.ProbeServer('http-ok')
+try{
+    $probe=Test-P2TProxyEndpoint -ProxyHost 127.0.0.1 -ProxyPort $server.Port -Protocol http -InspectRelated
+    Assert-True (-not $probe.Success -and $probe.Reason -like 'ListenerMetadataUnknown:*') 'Changed root owner during held graph inspection cannot authorize delegated paths'
+}finally{$server.Dispose()}
+$wideGraph=@();$identities=@{}
+for($i=0;$i -lt 9;$i++){
+    $identities[300+$i]=New-Candidate -Owner (300+$i)
+    $wideGraph+=[pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=(64000+$i);RemoteAddress='127.0.0.1';RemotePort=(11000+$i);OwningProcess=101}
+    $wideGraph+=[pscustomobject]@{LocalAddress='127.0.0.1';LocalPort=(11000+$i);RemoteAddress='127.0.0.1';RemotePort=(64000+$i);OwningProcess=(300+$i)}
+}
+& $discoveryModule {param($map) $script:chainIdentities=$map;function script:Get-P2TProcessIdentity {param($ProcessId) return $script:chainIdentities[$ProcessId]}} $identities
+Assert-Throws {& $discoveryModule {param($i,$r,$e) Get-P2TRelatedDirectProcesses $i $r $e} $httpIdentity $wideGraph $serverEndpoint} 'Delegated graph expansion cannot exceed its finite process budget'
 $discoveryModule=Import-Module (Join-Path $repository 'src\Discovery.psm1') -Force -PassThru
 
 # Revalidation compares the owner of a fresh connected socket to the stored
@@ -258,6 +347,12 @@ try {
     $disposedCount=0
     foreach($client in (& $discoveryModule {$script:observedClients.ToArray()})) {try{$null=$client.GetStream()}catch{$disposedCount++}}
     Assert-True ($disposedCount -eq 6) 'All identity revalidation paths release their probe clients'
+    $candidate | Add-Member NoteProperty RelatedDirectProcesses @((New-Candidate -Owner 101))
+    $relatedCurrent=New-Candidate -Owner 101
+    & $discoveryModule {param($root,$related) $script:identityFixture=$root;$script:relatedCurrent=$related;function script:Get-P2TProcessIdentity {param($ProcessId) if($ProcessId -eq 101){return $script:relatedCurrent}}} (New-Candidate) $relatedCurrent
+    Assert-True (Test-P2TProcessIdentity $candidate) 'Related delegated core tokens are revalidated with the bound root'
+    $relatedCurrent.ProcessStartTime='2026-09-30T00:00:00.0000000Z'
+    Assert-True (-not (Test-P2TProcessIdentity $candidate)) 'Restarted delegated core invalidates the binding before reuse'
     & $discoveryModule {function script:Connect-P2TLoopbackClient {param($ProxyHost,$ProxyPort,$TimeoutMs) throw 'Connect timed out.'}}
     Assert-True (-not (Test-P2TProcessIdentity $candidate)) 'Unreachable endpoint cannot pass identity revalidation'
 } finally {$server.Dispose()}

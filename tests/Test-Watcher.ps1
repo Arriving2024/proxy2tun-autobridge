@@ -26,6 +26,7 @@ function Get-P2TProxyCandidates {
     [pscustomobject]@{Host='127.0.0.1';Port=10808;Protocol='socks5';ProcessId=4242;ProcessName='fixture.exe';ProcessPath='C:\Fixture\fixture.exe';ProcessStartTime='2026-10-24T00:00:00.0000000Z';ParentProcessId=0;ParentName='';ParentPath='';ParentProcessStartTime='';Source='Listener';Priority=100}
 }
 function Select-P2TProxyCandidate {param($Candidates,$ProxyHost,$ProxyPort,$ProxyProtocol) $Candidates | Select-Object -First 1}
+function Get-P2TFamilyKey {param($Candidate) return ('core|'+$Candidate.ProcessId)}
 function Test-P2TProcessIdentity {
     param($Candidate)
     if($script:scenario -eq 'Identity' -and [Proxy2Tun.OwnedProcess]::Active -and [Proxy2Tun.OwnedProcess]::Starts -eq 1){$script:identityMisses++;return $false}
@@ -56,6 +57,7 @@ namespace Proxy2Tun {
   public long StartFileTime { get { return 1; } }
   public bool HasExited { get { return !Active; } }
   public OwnedProcess(string executable,string arguments,string directory){Root=directory;Active=true;Starts++;File.AppendAllText(Path.Combine(Root,"starts.txt"),"start\n");}
+  public OwnedProcess(string executable,string arguments,string directory,bool hidden):this(executable,arguments,directory){File.AppendAllText(Path.Combine(Root,"hidden.txt"),hidden.ToString()+"\n");}
   public bool StopGracefully(int milliseconds){if(Active)File.AppendAllText(Path.Combine(Root,"stops.txt"),"stop\n");Active=false;return true;}
   public void Dispose(){Active=false;}
   public static bool StopVerified(int id,long stamp,string path){File.WriteAllText(Path.Combine(Root,"kill-"+id+".txt"),"mock verified stop");return true;}
@@ -73,7 +75,7 @@ function Write-P2TState {
     [IO.File]::AppendAllText((Join-Path $script:root 'events.txt'),($State.Status+"`n"))
     if($State.Status -eq 'Running'){
         [IO.File]::WriteAllText((Join-Path $script:root 'ran.txt'),'yes')
-        if($script:scenario -eq 'Challenge' -or [Proxy2Tun.OwnedProcess]::Starts -ge 2){
+        if($script:scenario -in @('Challenge','Desktop') -or [Proxy2Tun.OwnedProcess]::Starts -ge 2){
             [IO.File]::WriteAllText((Join-Path $script:root 'runtime\stop.request'),'fixture stop')
         }
     }
@@ -101,7 +103,7 @@ function Get-NetRoute {
     if($script:scenario -eq 'RouteLoss' -and [Proxy2Tun.OwnedProcess]::Starts -eq 1 -and (Test-Path -LiteralPath (Join-Path $script:root 'ran.txt'))){$prefixes=@('0.0.0.0/1','::/1')}
     foreach($prefix in $prefixes){[pscustomobject]@{DestinationPrefix=$prefix;InterfaceIndex=$InterfaceIndex}}
 }
-function Get-CimInstance {param($ClassName,$Filter) $command=if($Filter -match '51001'){Join-Path $script:root 'Start-Bridge.ps1'}else{Join-Path $script:root 'runtime\config.json'};[pscustomobject]@{CommandLine=$command}}
+function Get-CimInstance {param($ClassName,$Filter) $command=if($Filter -match '51001'){if(Test-Path -LiteralPath (Join-Path $script:root 'owner-command.txt')){[IO.File]::ReadAllText((Join-Path $script:root 'owner-command.txt'))}else{Join-Path $script:root 'Start-Bridge.ps1'}}else{Join-Path $script:root 'runtime\config.json'};[pscustomobject]@{CommandLine=$command}}
 Export-ModuleMember -Function *
 '@
 
@@ -132,12 +134,13 @@ Export-ModuleMember -Function *-P2T*
 
 try{
     $null=New-Item -ItemType Directory -Path $testRoot -Force
-    foreach($scenario in @('Challenge','Identity','ProxyLoss','RouteLoss','Network','Forwarding','StartupFailure')){
+    foreach($scenario in @('Challenge','Identity','ProxyLoss','RouteLoss','Network','Forwarding','StartupFailure','Desktop')){
         $fixtureRoot=Join-Path $testRoot $scenario
         $null=New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'src') -Force
         $null=New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'runtime') -Force
         foreach($name in @('Start-Bridge.ps1','Stop-Bridge.ps1')){Copy-Item -LiteralPath (Join-Path $repository $name) -Destination (Join-Path $fixtureRoot $name)}
         Copy-Item -LiteralPath (Join-Path $repository 'src\Config.psm1') -Destination (Join-Path $fixtureRoot 'src\Config.psm1')
+        if($scenario -eq 'Desktop'){Copy-Item -LiteralPath (Join-Path $repository 'src\Desktop.psm1') -Destination (Join-Path $fixtureRoot 'src\Desktop.psm1')}
         $healthSource=[IO.File]::ReadAllText((Join-Path $repository 'src\Health.psm1'))
         Save-Fixture (Join-Path $fixtureRoot 'src\Health.psm1') ($healthSource+"`r`n"+$healthFixture)
         Save-Fixture (Join-Path $fixtureRoot 'src\Discovery.psm1') $discoveryFixture
@@ -153,6 +156,7 @@ exit /b 0
         if($scenario -eq 'StartupFailure'){Save-Fixture (Join-Path $fixtureRoot 'runtime\config.json') $oldBytes}
         $budget=if($scenario -eq 'StartupFailure'){0}else{1}
         $arguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Mode Watch -SingBoxPath "{1}" -PollSeconds 1 -LossThreshold 2 -HealthIntervalSeconds 1 -StartupGraceSeconds 1 -NetworkDebounceSeconds 2 -MaxRecoveryAttempts {2} -RecoveryBaseSeconds 1' -f (Join-Path $fixtureRoot 'Start-Bridge.ps1'),(Join-Path $fixtureRoot 'fake-core.cmd'),$budget
+        if($scenario -eq 'Desktop'){$arguments+=' -DesktopMode'}
         $process=Start-Process -FilePath $powershell -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $fixtureRoot 'stdout.log') -RedirectStandardError (Join-Path $fixtureRoot 'stderr.log')
         $null=$process.Handle
         if(-not $process.WaitForExit(30000)){throw ($scenario+': mock watcher timed out.')}
@@ -164,6 +168,12 @@ exit /b 0
         Assert-Watcher ($events[0] -eq 'Waiting' -and $state.Status -eq 'Stopped' -and $null -eq $state.Child -and $null -eq $state.AdapterGuid) ($scenario+': waiting/stop request leaves clean owned state')
         Assert-Watcher ($starts -eq $stops) ($scenario+': every started core is released exactly once')
         switch($scenario){
+            'Desktop'{
+                $desktopStatus=Get-Content -LiteralPath (Join-Path $fixtureRoot 'runtime\desktop-status.json') -Raw -Encoding UTF8|ConvertFrom-Json
+                Assert-Watcher ($starts -eq 1 -and $state.DesktopMode -eq $true -and $events -contains 'Running' -and $events -notcontains 'Backoff') 'Desktop waits for a proxy and completes verified startup without spending a recovery retry'
+                Assert-Watcher ($desktopStatus.Status -eq 'Stopped' -and $desktopStatus.SelectedEndpoint -eq 'socks5://127.0.0.1:10808') 'Desktop state follows watcher cleanup and retains the verified bound endpoint'
+                Assert-Watcher ((Get-Content -LiteralPath (Join-Path $fixtureRoot 'hidden.txt') -Raw).Trim() -eq 'True') 'Desktop watcher requests the hidden native core overload'
+            }
             'Challenge'{
                 Assert-Watcher ($starts -eq 1 -and @($events | Where-Object {$_ -eq 'Running'}).Count -eq 1 -and $events -notcontains 'Backoff') '403 challenge passes startup without triggering a rebuild'
                 Assert-Watcher ($log -match 'CloudflareChallenge, HTTP 403, curl 0' -and $log -match 'FreshDnsNxDomain') '403 service status and fresh DNS evidence are logged separately'
@@ -215,6 +225,24 @@ exit /b 0
     Assert-Watcher ((Test-Path (Join-Path $fixtureRoot 'kill-51001.txt')) -and (Test-Path (Join-Path $fixtureRoot 'kill-51002.txt'))) 'Emergency stop requests verified termination for owner and core'
     $state=Get-Content -LiteralPath (Join-Path $fixtureRoot 'runtime\state.json') -Raw | ConvertFrom-Json
     Assert-Watcher ($state.Status -eq 'Stopped' -and $null -eq $state.AdapterGuid -and $null -eq $state.Child) 'Emergency cleanup persists clean stopped state'
+    foreach($ownerCase in @('DesktopRun','DesktopStop','OtherPath')){
+        foreach($name in @('kill-51001.txt','kill-51002.txt')){Remove-Item -LiteralPath (Join-Path $fixtureRoot $name) -Force -ErrorAction SilentlyContinue}
+        $state.Owner=[pscustomobject]@{Id=51001;Path='C:\Fixture\powershell.exe';StartFileTime='1'}
+        $state.Child=$null;$state.AdapterGuid=$null;$state.Status='Running';$state.DesktopMode=$true
+        $command=switch($ownerCase){
+            'DesktopRun'{'powershell.exe -File "'+(Join-Path $fixtureRoot 'desktop\Backend.ps1')+'" -Action Run'}
+            'DesktopStop'{'powershell.exe -File "'+(Join-Path $fixtureRoot 'desktop\Backend.ps1')+'" -Action Stop'}
+            'OtherPath'{'powershell.exe -File "C:\Unrelated\desktop\Backend.ps1" -Action Run'}
+        }
+        Save-Fixture (Join-Path $fixtureRoot 'owner-command.txt') $command
+        Save-Fixture (Join-Path $fixtureRoot 'runtime\state.json') ($state|ConvertTo-Json -Depth 12)
+        $process=Start-Process -FilePath $powershell -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $fixtureRoot ($ownerCase+'-stdout.log')) -RedirectStandardError (Join-Path $fixtureRoot ($ownerCase+'-stderr.log'))
+        $null=$process.Handle
+        if(-not $process.WaitForExit(15000)){throw ($ownerCase+': mock emergency stop timed out.')}
+        $killed=Test-Path -LiteralPath (Join-Path $fixtureRoot 'kill-51001.txt')
+        if($ownerCase -eq 'DesktopRun'){Assert-Watcher ($process.ExitCode -eq 0 -and $killed) 'Emergency stop accepts the verified desktop Backend Run command for this installation'}
+        else{Assert-Watcher ($process.ExitCode -ne 0 -and -not $killed) ($ownerCase+': forced stop rejects a different action or installation command')}
+    }
     $cleanupBefore=Get-FixtureLineCount (Join-Path $fixtureRoot 'cleanup.txt')
     $startsBefore=Get-FixtureLineCount (Join-Path $fixtureRoot 'starts.txt')
     $state.Root='C:\Fixture\UnrelatedInstallation'
@@ -225,7 +253,7 @@ exit /b 0
     if(-not $process.WaitForExit(15000)){throw 'Ownership mismatch fixture timed out.'}
     Assert-Watcher ($process.ExitCode -ne 0 -and (Get-Content -LiteralPath (Join-Path $fixtureRoot 'mismatch-stderr.log') -Raw) -match 'Previous ownership state mismatch') 'Start rejects previous state belonging to another installation'
     Assert-Watcher ((Get-FixtureLineCount (Join-Path $fixtureRoot 'cleanup.txt')) -eq $cleanupBefore -and (Get-FixtureLineCount (Join-Path $fixtureRoot 'starts.txt')) -eq $startsBefore) 'Ownership mismatch performs neither network cleanup nor core start'
-    Write-Host ('Watcher integration passed: {0} checks across seven scenarios plus emergency stop. All network/core operations mocked.' -f $checks)
+    Write-Host ('Watcher integration passed: {0} checks across eight scenarios plus scoped emergency stop. All network/core operations mocked.' -f $checks)
 }finally{
     if($process -and -not $process.HasExited){$process.Kill();$process.WaitForExit()}
     $resolved=[IO.Path]::GetFullPath($testRoot)

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.3.0 — 2026-11-02 — local experimental desktop preview
+
+### Added
+
+- A single-file x64 Windows Forms entry point wrapping the existing verified proxy-to-TUN controller. Normal startup performs a one-time Windows UAC flow; preview and self-test modes remain unelevated and do not change networking.
+- Embedded source-only payload with an explicit file allowlist, per-file SHA-256 verification and a versioned per-user extraction directory. Existing changed files are rejected rather than silently overwritten.
+- Desktop status, proxy selection when independent clients are ambiguous, stop, retry and diagnostics. Successful operation depends on real owned TUN routes, DNS and certificate-validated HTTPS checks.
+- First-use acquisition of the fixed official sing-box 1.14.2 dependency with the existing pinned archive hash; the executable remains outside the distributed desktop payload.
+- A separate desktop ownership manifest and optional verified dependency receipt for reversible uninstall, preserving user files and runtime data by default.
+- A desktop builder using the system x64 .NET Framework C# compiler, plus desktop/installer regression coverage. Existing CLI commands continue to work.
+
+### Scope
+
+- Local preview only: no GitHub push or public Release is implied by this version declaration or by a local build.
+- Existing TUN instances remain conflict-protected. No default startup task/service, credential import, proprietary client distribution, manual Misty configuration overwrite or general UDP support is added.
+- Automatic checks, UI preview and local component validation do not establish long-term stability or authenticated application success on a second computer.
+
 ## v0.2.1 — 2026-10-31 — experimental patch prerelease
 
 Fix wrapper-level false negatives found while deploying v0.2.0 on a second Windows computer and diagnosing the original local installation. Existing Detect / Generate / Watch commands and recovery/ownership boundaries remain available.

@@ -18,6 +18,20 @@ function Get-P2TDirectProcessPaths {
         $driveRoot = [IO.Path]::GetPathRoot($parentPath)
         if ($genericParents -notcontains $parentName -and $parentDirectory.Length -gt $driveRoot.Length -and $ownerPath.StartsWith($parentDirectory,[StringComparison]::OrdinalIgnoreCase)) { $paths.Add($parentPath) }
     }
+    if($Candidate.PSObject.Properties['RelatedDirectProcesses']){
+        $related=@($Candidate.RelatedDirectProcesses)
+        if($related.Count -gt 8){throw 'Verified proxy chain exceeds the bounded path limit.'}
+        foreach($identity in $related){
+            if(-not $Candidate.ParentProcessStartTime -or -not $Candidate.ParentPath -or $genericParents -contains ([IO.Path]::GetFileName($Candidate.ParentPath).ToLowerInvariant())){throw 'Proxy chain needs a verified application parent.'}
+            $parentDirectory=[IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Candidate.ParentPath)).TrimEnd('\')+'\'
+            if($parentDirectory.Length -le ([IO.Path]::GetPathRoot($Candidate.ParentPath)).Length -or -not $ownerPath.StartsWith($parentDirectory,[StringComparison]::OrdinalIgnoreCase)){throw 'Proxy chain needs a shared application installation directory.'}
+            if(-not $identity.ProcessPath -or -not [IO.Path]::IsPathRooted($identity.ProcessPath) -or -not $identity.ProcessStartTime -or [int]$identity.ProcessId -le 0){throw 'Delegated proxy has an incomplete process identity.'}
+            $relatedPath=[IO.Path]::GetFullPath([string]$identity.ProcessPath)
+            if($identity.ParentProcessId -ne $Candidate.ParentProcessId -or $identity.ParentPath -ine $Candidate.ParentPath -or $identity.ParentProcessStartTime -ne $Candidate.ParentProcessStartTime -or -not $relatedPath.StartsWith($parentDirectory,[StringComparison]::OrdinalIgnoreCase)){throw 'Delegated proxy is outside the verified application installation.'}
+            if([IO.Path]::GetFileName($relatedPath) -in @('sing-box.exe','svchost.exe')){throw 'A shared or TUN process cannot become a delegated upstream bypass.'}
+            $paths.Add($relatedPath)
+        }
+    }
     foreach ($extraPath in $ExtraDirectProcessPath) {
         if (-not [IO.Path]::IsPathRooted($extraPath) -or -not (Test-Path -LiteralPath $extraPath -PathType Leaf)) { throw ('Extra DIRECT executable must be an existing absolute file path: ' + $extraPath) }
         if ([IO.Path]::GetExtension($extraPath) -ine '.exe') { throw ('Extra DIRECT path must be an executable: ' + $extraPath) }

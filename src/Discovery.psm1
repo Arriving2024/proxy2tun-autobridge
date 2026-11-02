@@ -108,6 +108,45 @@ function Get-P2TConnectedProcessIdentity {
     } catch { return $null }
 }
 
+function Get-P2TRelatedDirectProcesses {
+    param($Identity,[object[]]$Connections,$ServerEndpoint)
+    $family=Get-P2TFamilyKey $Identity
+    $related=New-Object 'Collections.Generic.List[object]'
+    $queue=New-Object 'Collections.Generic.Queue[object]'
+    $queue.Enqueue([pscustomobject]@{Identity=$Identity;Endpoint=$ServerEndpoint;Depth=0})
+    $seen=@{};$seen[[int]$Identity.ProcessId]=$true
+    while($queue.Count -gt 0){
+        $node=$queue.Dequeue()
+        foreach($row in $Connections){
+            if([int]$row.OwningProcess -ne [int]$node.Identity.ProcessId){continue}
+            $local=$null;$remote=$null
+            if(-not [Net.IPAddress]::TryParse([string]$row.LocalAddress,[ref]$local) -or -not [Net.IPAddress]::TryParse([string]$row.RemoteAddress,[ref]$remote)){continue}
+            if($local.IsIPv4MappedToIPv6){$local=$local.MapToIPv4()};if($remote.IsIPv4MappedToIPv6){$remote=$remote.MapToIPv4()}
+            if(-not [Net.IPAddress]::IsLoopback($local) -or -not [Net.IPAddress]::IsLoopback($remote)){continue}
+            $serverAddress=$node.Endpoint.Address
+            if($serverAddress.IsIPv4MappedToIPv6){$serverAddress=$serverAddress.MapToIPv4()}
+            # Exclude inbound rows. New outbound loopback connections must use
+            # Windows' default dynamic range; ambiguous roles are not guessed.
+            if([int]$row.LocalPort -eq $node.Endpoint.Port -and $local.Equals($serverAddress)){continue}
+            if([int]$row.LocalPort -lt 49152 -and [int]$row.RemotePort -ge 49152){continue}
+            if([int]$row.LocalPort -lt 49152 -or [int]$row.RemotePort -ge 49152){throw 'DelegatedProxyRoleUnknown: loopback connection direction could not be verified.'}
+            $clientEndpoint=New-Object Net.IPEndPoint($local,[int]$row.LocalPort)
+            $childEndpoint=New-Object Net.IPEndPoint($remote,[int]$row.RemotePort)
+            $childId=Resolve-P2TConnectedOwnerId -Connections $Connections -ClientEndpoint $clientEndpoint -ServerEndpoint $childEndpoint
+            if($null -eq $childId){throw 'DelegatedProxyIdentityUnknown: loopback server identity could not be verified.'}
+            if($childId -eq $node.Identity.ProcessId){continue}
+            if($seen.ContainsKey([int]$childId)){continue}
+            $childIdentity=Get-P2TProcessIdentity -ProcessId $childId
+            if(-not $childIdentity -or -not $family.StartsWith('app|') -or (Get-P2TFamilyKey $childIdentity) -ne $family){throw 'DelegatedProxyFamilyUnknown: delegated proxy is outside the verified application family.'}
+            if($node.Depth -ge 3 -or $related.Count -ge 8){throw 'DelegatedProxyLimit: proxy chain exceeds the bounded inspection limit.'}
+            $seen[[int]$childId]=$true
+            $related.Add($childIdentity)
+            $queue.Enqueue([pscustomobject]@{Identity=$childIdentity;Endpoint=$childEndpoint;Depth=($node.Depth+1)})
+        }
+    }
+    return $related.ToArray()
+}
+
 function Read-P2TBytes {
     param([IO.Stream]$Stream, [int]$Count, [Diagnostics.Stopwatch]$Clock, [int]$TimeoutMs)
     $buffer = New-Object byte[] $Count
@@ -151,7 +190,8 @@ function Test-P2TProxyEndpoint {
         [ValidateRange(100,30000)][int]$TimeoutMs = 1500,
         [string]$ProbeAddress = '1.1.1.1',
         [ValidateRange(1,65535)][int]$ProbePort = 443,
-        [switch]$RequireIdentity
+        [switch]$RequireIdentity,
+        [switch]$InspectRelated
     )
     $client = $null; $stream = $null; $clock = [Diagnostics.Stopwatch]::StartNew()
     try {
@@ -194,13 +234,20 @@ function Test-P2TProxyEndpoint {
         }
         if (-not (Test-P2TTlsServerHello $stream $clock $TimeoutMs)) { throw 'CONNECT did not return a TLS ServerHello.' }
         $identity=$null
-        if ($RequireIdentity) {
+        $related=@()
+        if ($RequireIdentity -or $InspectRelated) {
             $identity=Get-P2TConnectedProcessIdentity -Client $client
             if (-not $identity) { throw 'ListenerMetadataUnknown: connected proxy process identity could not be verified.' }
         }
-        [pscustomobject]@{ Success = $true; Protocol = $Protocol; Reason = 'CONNECT and TLS ServerHello received.'; Identity=$identity }
+        if($InspectRelated){
+            $connections=@(Get-NetTCPConnection -State Established -ErrorAction Stop)
+            $owner=Resolve-P2TConnectedOwnerId -Connections $connections -ClientEndpoint $client.Client.LocalEndPoint -ServerEndpoint $client.Client.RemoteEndPoint
+            if($null -eq $owner -or $owner -ne $identity.ProcessId){throw 'ListenerMetadataUnknown: proxy identity changed during chain inspection.'}
+            $related=@(Get-P2TRelatedDirectProcesses -Identity $identity -Connections $connections -ServerEndpoint $client.Client.RemoteEndPoint)
+        }
+        [pscustomobject]@{ Success = $true; Protocol = $Protocol; Reason = 'CONNECT and TLS ServerHello received.'; Identity=$identity; RelatedDirectProcesses=$related }
     } catch {
-        [pscustomobject]@{ Success = $false; Protocol = $Protocol; Reason = $_.Exception.Message; Identity=$null }
+        [pscustomobject]@{ Success = $false; Protocol = $Protocol; Reason = $_.Exception.Message; Identity=$null; RelatedDirectProcesses=@() }
     } finally {
         if ($stream) { $stream.Dispose() }
         if ($client) { $client.Close() }
@@ -212,7 +259,8 @@ function Get-P2TProxyCandidates {
     [CmdletBinding()]
     param(
         [ValidateRange(100,30000)][int]$TimeoutMs = 1500, [string]$ProbeAddress = '1.1.1.1', [int]$ProbePort = 443,
-        [string]$ProxyHost='', [ValidateRange(0,65535)][int]$ProxyPort=0, [ValidateSet('','socks5','http')][string]$ProxyProtocol=''
+        [string]$ProxyHost='', [ValidateRange(0,65535)][int]$ProxyPort=0, [ValidateSet('','socks5','http')][string]$ProxyProtocol='',
+        [switch]$IncludeEstablished
     )
     if ($ProxyHost -ieq 'localhost') { $ProxyHost='127.0.0.1' }
     if ($ProxyHost) {
@@ -244,13 +292,31 @@ function Get-P2TProxyCandidates {
                 $endpoints[$key] = [pscustomobject]@{ Host=$address; Port=[int]$listener.LocalPort; Source='Listener'; Priority=100 }
             }
         }
+        if($IncludeEstablished){
+            # These rows only seed endpoint guesses. A seed is never accepted
+            # without a fresh protocol exchange and connected-owner inspection.
+            try{$established=@(Get-NetTCPConnection -State Established -ErrorAction Stop)}catch{$established=@()}
+            $added=0
+            foreach($row in ($established | Sort-Object LocalPort,LocalAddress)){
+                if([int]$row.LocalPort -lt 1 -or [int]$row.LocalPort -gt 49151 -or [int]$row.RemotePort -lt 49152){continue}
+                $local=$null;$remote=$null
+                if(-not [Net.IPAddress]::TryParse([string]$row.LocalAddress,[ref]$local) -or -not [Net.IPAddress]::TryParse([string]$row.RemoteAddress,[ref]$remote)){continue}
+                if(-not [Net.IPAddress]::IsLoopback($local) -or -not [Net.IPAddress]::IsLoopback($remote)){continue}
+                $address=$local.ToString();$key='{0}|{1}' -f $address,$row.LocalPort
+                if(-not $endpoints.ContainsKey($key)){
+                    if($added -ge 64){break}
+                    $endpoints[$key]=[pscustomobject]@{Host=$address;Port=[int]$row.LocalPort;Source='EstablishedSeed';Priority=100}
+                    $added++
+                }
+            }
+        }
     }
     foreach ($endpoint in ($endpoints.Values | Sort-Object Priority,Port,Host)) {
         if ($ProxyHost -and $endpoint.Host -ne $ProxyHost) { continue }
         if ($ProxyPort -gt 0 -and $endpoint.Port -ne $ProxyPort) { continue }
         $protocols=if ($ProxyProtocol) { @($ProxyProtocol) } else { @('socks5','http') }
         foreach ($protocol in $protocols) {
-            $probe = Test-P2TProxyEndpoint -ProxyHost $endpoint.Host -ProxyPort $endpoint.Port -Protocol $protocol -TimeoutMs $TimeoutMs -ProbeAddress $ProbeAddress -ProbePort $ProbePort -RequireIdentity
+            $probe = Test-P2TProxyEndpoint -ProxyHost $endpoint.Host -ProxyPort $endpoint.Port -Protocol $protocol -TimeoutMs $TimeoutMs -ProbeAddress $ProbeAddress -ProbePort $ProbePort -RequireIdentity -InspectRelated:$IncludeEstablished
             if ($probe.Success) {
                 $identity=$probe.Identity
                 if (-not $identity -or [int]$identity.ProcessId -le 0) { Write-Verbose ('Skipping port {0}: connected proxy identity unavailable.' -f $endpoint.Port); continue }
@@ -259,6 +325,7 @@ function Get-P2TProxyCandidates {
                     ProcessId=$identity.ProcessId; ProcessName=$identity.ProcessName; ProcessPath=$identity.ProcessPath; ProcessStartTime=$identity.ProcessStartTime
                     ParentProcessId=$identity.ParentProcessId; ParentName=$identity.ParentName; ParentPath=$identity.ParentPath; ParentProcessStartTime=$identity.ParentProcessStartTime
                     Source=$endpoint.Source; Priority=$endpoint.Priority
+                    RelatedDirectProcesses=@(if($IncludeEstablished){$probe.RelatedDirectProcesses})
                 }
                 # Mixed listeners can support both protocols. Keep both so an
                 # explicit HTTP endpoint remains selectable on such a listener.
@@ -318,9 +385,18 @@ function Test-P2TProcessIdentity {
         $identity=Get-P2TConnectedProcessIdentity -Client $client
         if (-not $identity -or $identity.ProcessId -ne $Candidate.ProcessId -or $identity.ProcessPath -ine $Candidate.ProcessPath -or $identity.ProcessStartTime -ne $Candidate.ProcessStartTime) { return $false }
         if ($Candidate.PSObject.Properties['ParentProcessStartTime'] -and $Candidate.ParentProcessStartTime -and ($identity.ParentPath -ine $Candidate.ParentPath -or $identity.ParentProcessStartTime -ne $Candidate.ParentProcessStartTime)) { return $false }
+        if($Candidate.PSObject.Properties['RelatedDirectProcesses']){
+            $related=@($Candidate.RelatedDirectProcesses)
+            if($related.Count -gt 8){return $false}
+            foreach($expected in $related){
+                $current=Get-P2TProcessIdentity -ProcessId $expected.ProcessId
+                if(-not $current -or $current.ProcessPath -ine $expected.ProcessPath -or $current.ProcessStartTime -ne $expected.ProcessStartTime -or (Get-P2TFamilyKey $current) -ne (Get-P2TFamilyKey $Candidate)){return $false}
+                if($current.ParentProcessStartTime -ne $expected.ParentProcessStartTime -or $current.ParentPath -ine $expected.ParentPath){return $false}
+            }
+        }
         return $true
     } catch { return $false }
     finally { if ($client) { $client.Dispose() } }
 }
 
-Export-ModuleMember -Function ConvertFrom-P2TSystemProxy,Get-P2TSystemProxyEndpoints,Get-P2TProcessIdentity,Test-P2TProxyEndpoint,Get-P2TProxyCandidates,Select-P2TProxyCandidate,Test-P2TProcessIdentity
+Export-ModuleMember -Function ConvertFrom-P2TSystemProxy,Get-P2TSystemProxyEndpoints,Get-P2TProcessIdentity,Test-P2TProxyEndpoint,Get-P2TProxyCandidates,Select-P2TProxyCandidate,Test-P2TProcessIdentity,Get-P2TFamilyKey

@@ -12,7 +12,8 @@ namespace Proxy2Tun {
         public int Id { get; private set; }
         public long StartFileTime { get; private set; }
         public bool HasExited { get { return process == IntPtr.Zero || WaitForSingleObject(process, 0) == 0; } }
-        public OwnedProcess(string executable, string arguments, string directory) {
+        public OwnedProcess(string executable, string arguments, string directory) : this(executable, arguments, directory, false) {}
+        public OwnedProcess(string executable, string arguments, string directory, bool hidden) {
             try {
                 job = CreateJobObject(IntPtr.Zero, null);
                 if(job == IntPtr.Zero) Fail();
@@ -25,7 +26,7 @@ namespace Proxy2Tun {
                 STARTUPINFO startup = new STARTUPINFO(); startup.cb = Marshal.SizeOf(startup);
                 PROCESS_INFORMATION info;
                 if(!CreateProcess(executable, new StringBuilder("\"" + executable + "\" " + arguments), IntPtr.Zero, IntPtr.Zero, false,
-                    0x4 | 0x200, IntPtr.Zero, directory, ref startup, out info)) Fail();
+                    0x4 | 0x200 | (hidden ? 0x08000000u : 0u), IntPtr.Zero, directory, ref startup, out info)) Fail();
                 process = info.hProcess; Id = info.dwProcessId;
                 try {
                     if(!AssignProcessToJobObject(job, process)) Fail();

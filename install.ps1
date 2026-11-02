@@ -15,8 +15,9 @@ $sourceFiles = @(
     'Start-Bridge.cmd', 'Stop-Bridge.cmd', 'install.ps1', 'uninstall.ps1',
     'README.md', 'CHANGELOG.md', 'RELEASE_NOTES.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md', '.gitignore', 'VERSION',
     'src/Discovery.psm1', 'src/Config.psm1', 'src/Lifecycle.psm1', 'src/Health.psm1', 'src/NativeProcess.cs',
-    'tools/Repair-LegacyScriptEncoding.ps1',
-    'docs/architecture.md', 'docs/troubleshooting.md', 'docs/validation.md', 'docs/field-debug.md'
+    'src/Desktop.psm1', 'src/DesktopApp.cs', 'desktop/Backend.ps1',
+    'tools/Repair-LegacyScriptEncoding.ps1', 'tools/Build-Desktop.ps1',
+    'docs/architecture.md', 'docs/troubleshooting.md', 'docs/validation.md', 'docs/field-debug.md', 'docs/desktop.md'
 )
 
 function Assert-NoReparseAncestor([string]$Path) {
@@ -100,7 +101,7 @@ try {
     New-Item -ItemType Directory -Path $target -ErrorAction Stop | Out-Null
     $targetCreated = $true
     Assert-NoReparseAncestor $target
-    foreach ($directoryName in @('src', 'docs', 'bin', 'tools')) {
+    foreach ($directoryName in @('src', 'docs', 'bin', 'tools', 'desktop')) {
         $directoryPath = Join-Path $target $directoryName
         New-Item -ItemType Directory -Path $directoryPath -ErrorAction Stop | Out-Null
         $createdDirectories.Add($directoryPath)

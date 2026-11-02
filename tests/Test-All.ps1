@@ -15,6 +15,7 @@ Write-Host ('PASS syntax: {0} PowerShell files' -f $files.Count)
 & (Join-Path $PSScriptRoot 'Test-DiscoveryConfig.ps1') -SingBoxPath $SingBoxPath
 & (Join-Path $PSScriptRoot 'Test-ConfigTransaction.ps1') -SingBoxPath $SingBoxPath
 & (Join-Path $PSScriptRoot 'Test-Health.ps1')
+& (Join-Path $PSScriptRoot 'Test-Desktop.ps1')
 & (Join-Path $PSScriptRoot 'Test-Lifecycle.ps1')
 & (Join-Path $PSScriptRoot 'Test-NetworkCleanup.ps1')
 & (Join-Path $PSScriptRoot 'Test-Watcher.ps1')
