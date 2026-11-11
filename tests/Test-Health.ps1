@@ -324,7 +324,8 @@ public static class ProcessFixture {
     Assert-Health ((Test-P2TForwardingHealth -RuntimePath $testRoot).Success) 'Independent second HTTPS origin can prove forwarding if the first origin fails'
     Assert-Health ((& $healthModule {$script:httpsCalls}) -eq 2) 'HTTPS fallback is limited to exactly one extra origin'
     & $healthModule {$script:freshGood=$false;$script:firstHttpsGood=$true}
-    Assert-Health (-not (Test-P2TForwardingHealth -RuntimePath $testRoot).Success) 'Cached positive OS DNS plus HTTPS cannot mask a failed fresh TUN DNS query'
+    $degraded = Test-P2TForwardingHealth -RuntimePath $testRoot
+    Assert-Health (-not $degraded.Success -and -not $degraded.FailureKind) 'Fresh DNS timeout with working system DNS and HTTPS is degraded without triggering recovery'
     Write-Host ('Health tests passed: {0} checks. No live network probes ran.' -f $checks)
 }finally{
     Remove-Module $healthModule -Force -ErrorAction SilentlyContinue

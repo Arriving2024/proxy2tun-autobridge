@@ -122,12 +122,12 @@ function Get-P2TNetworkFingerprint {
     [pscustomobject]@{Valid=$true;Available=$true;Fingerprint=$fingerprint}
 }
 function Test-P2TForwardingHealth {
-    param($RuntimePath)
+    param($RuntimePath,[switch]$Confirmation)
     $script:fixtureHealthCalls++
     $good=$true;$status=204;$classification='HttpSuccess';$curl=0
     if($script:fixtureScenario -eq 'Challenge'){$status=403;$classification='CloudflareChallenge'}
     if($script:fixtureScenario -eq 'StartupFailure' -or ($script:fixtureScenario -eq 'Forwarding' -and $script:fixtureHealthCalls -gt 1)){$good=$false;$status=0;$classification='NetworkError';$curl=56}
-    [pscustomobject]@{Success=$good;Dns=[pscustomobject]@{Success=$true;Classification='DnsSuccess'};FreshDns=[pscustomobject]@{Success=$true;Classification='FreshDnsNxDomain'};Https=[pscustomobject]@{TransportSuccess=$good;ServiceSuccess=($status -eq 204);Classification=$classification;HttpStatus=$status;CurlExitCode=$curl;ElapsedSeconds=0.4}}
+    [pscustomobject]@{Success=$good;FailureKind=$(if(-not $good){"Https"}else{""});Dns=[pscustomobject]@{Success=$true;Classification='DnsSuccess'};FreshDns=[pscustomobject]@{Success=$true;Classification='FreshDnsNxDomain'};Https=[pscustomobject]@{TransportSuccess=$good;ServiceSuccess=($status -eq 204);Classification=$classification;HttpStatus=$status;CurlExitCode=$curl;ElapsedSeconds=0.4}}
 }
 Export-ModuleMember -Function *-P2T*
 '@

@@ -89,7 +89,7 @@ try {
     Save-BridgeState -State $state -Path $statePath
     Write-P2TLog -Path $logPath -Message 'Proxy2TUN AutoBridge v0.3.0. Watcher; DNS and HTTPS checks enabled. Ctrl+C or Stop-Bridge stops it.'
     $network=New-P2TNetworkObservation -Snapshot (Get-P2TNetworkFingerprint)
-    $candidate=$null;$misses=0;$tunMisses=0;$forwardingMisses=0;$lastNotice='';$scanAt=[DateTime]::MinValue;$healthAt=[DateTime]::MinValue;$lastHealth=''
+    $candidate=$null;$misses=0;$tunMisses=0;$forwardingMisses=0;$lastNotice='';$scanAt=[DateTime]::MinValue;$healthAt=[DateTime]::MinValue;$lastHealth='';$lastForwardingFailure=''
     if($DesktopMode){Write-P2TDesktopStatus -RuntimePath $runtime -Status 'Scanning' -Message '正在识别本机代理软件。'}
     while(-not (Test-Path -LiteralPath $stopPath)){
         if([DateTime]::UtcNow -lt $scanAt){Start-Sleep -Milliseconds 200;continue}
@@ -113,11 +113,17 @@ try {
                 if($tunMisses -ge $LossThreshold){$failure=$tunNetwork.Classification}
                 elseif($misses -ge $LossThreshold){$failure='UpstreamUnavailableOrIdentityChanged'}
                 elseif($tunNetwork.Success -and $upstreamHealthy -and [DateTime]::UtcNow -ge $healthAt){
-                    $health=Test-P2TForwardingHealth -RuntimePath $runtime
+                    $health=Test-P2TForwardingHealth -RuntimePath $runtime -Confirmation:($forwardingMisses -ge ($LossThreshold - 1))
                     $healthAt=[DateTime]::UtcNow.AddSeconds($HealthIntervalSeconds)
                     $summary='{0}; {1}; HTTPS {2}, HTTP {3}, curl {4}' -f $health.Dns.Classification,$health.FreshDns.Classification,$health.Https.Classification,$health.Https.HttpStatus,$health.Https.CurlExitCode
                     if($health.Success){$forwardingMisses=0;Register-P2TRecoverySuccess -State $recovery -HealthyResetSeconds $HealthyResetSeconds}
-                    else{$forwardingMisses++;$recovery.HealthySince=$null}
+                    else {
+                        $recovery.HealthySince = $null
+                        if (-not $health.FailureKind) { $forwardingMisses = 0 }
+                        elseif ($health.FailureKind -eq $lastForwardingFailure) { $forwardingMisses++ }
+                        else { $forwardingMisses = 1 }
+                        $lastForwardingFailure = $health.FailureKind
+                    }
                     if($DesktopMode){$state.LastHealthPassed=[bool]$health.Success;$state.LastHealthUtc=[DateTime]::UtcNow.ToString('o');Save-BridgeState -State $state -Path $statePath}
                     if($summary -ne $lastHealth -or -not $health.Success){Write-P2TLog -Path $logPath -Message ('Forwarding check: '+$summary);$lastHealth=$summary}
                     if($forwardingMisses -ge $LossThreshold){$failure='TunAliveButForwardingFailed'}

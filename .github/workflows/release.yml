@@ -27,6 +27,16 @@ jobs:
           $version = (Get-Content ./VERSION -Raw).Trim()
           if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid version' }
           ./tools/Build-Release.ps1 -Version "v$version" -OutputDirectory "$env:RUNNER_TEMP\release"
+      - name: Build and test desktop executable
+        shell: powershell
+        run: |
+          $version = (Get-Content ./VERSION -Raw).Trim()
+          ./tools/Build-Desktop.ps1 -Version $version -OutputDirectory "$env:RUNNER_TEMP\desktop"
+          $exe = Join-Path "$env:RUNNER_TEMP\desktop" "Proxy2TUN-AutoBridge-v$version.exe"
+          $test = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru -WindowStyle Hidden
+          if ($test.ExitCode -ne 0) { throw 'Desktop self-test failed' }
+          Copy-Item $exe "$env:RUNNER_TEMP\release"
+          Copy-Item "$env:RUNNER_TEMP\desktop\SHA256SUMS.txt" "$env:RUNNER_TEMP\release\Desktop-SHA256SUMS.txt"
       - name: Publish experimental release at tested commit
         uses: actions/github-script@v7
         with:
@@ -55,7 +65,9 @@ jobs:
             const expected = [
               `Proxy2TUN-AutoBridge-${tag}-windows-x64-source.zip`,
               `Proxy2TUN-AutoBridge-${tag}-windows-x64-source.manifest.json`,
-              'SHA256SUMS.txt'
+              'SHA256SUMS.txt',
+              `Proxy2TUN-AutoBridge-${tag}.exe`,
+              'Desktop-SHA256SUMS.txt'
             ];
             for (const name of expected) {
               const data = fs.readFileSync(path.join(folder, name));

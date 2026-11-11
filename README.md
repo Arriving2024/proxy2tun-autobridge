@@ -1,10 +1,10 @@
 # Proxy2TUN AutoBridge
 
-**v0.3.0 · 本地实验性桌面预览 · Windows 11 x64 · MIT**
+**v0.3.0 · 实验性桌面预发布 · Windows 11 x64 · MIT**
 
 把 Windows 本机可用的 SOCKS5 / HTTP CONNECT 代理接到 sing-box TUN。双击桌面 EXE 后，自动检测本地代理、核实归属、生成配置并监控连接；停止后撤销本工具的 TUN 接管。桌面界面提供状态、停止和诊断入口，原命令行入口继续可用。默认不安装服务、计划任务或开机启动项，不修改 Windows System Proxy。
 
-实际仓库是 [Arriving2024/proxy2tun-autobridge](https://github.com/Arriving2024/proxy2tun-autobridge)。本次在 v0.2.1 上开发 **v0.3.0 本地桌面预览**，尚未推送或发布到 GitHub；公开发行状态与下载以仓库 [Releases](https://github.com/Arriving2024/proxy2tun-autobridge/releases) 为准。
+实际仓库是 [Arriving2024/proxy2tun-autobridge](https://github.com/Arriving2024/proxy2tun-autobridge)。本次在 v0.2.1 上开发 **v0.3.0 桌面预发布**；公开发行状态与下载以仓库 [Releases](https://github.com/Arriving2024/proxy2tun-autobridge/releases) 为准。
 
 ## 双击使用桌面预览
 
@@ -145,7 +145,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1
 
 ## 验证与构建
 
-v0.3.0 保持本地实验性桌面预览。用户手工恢复成功，不能替代新封装在 Wi-Fi / 以太网切换、实际远控及真实 TUN 清理上的管理员验收。自动化套件不创建 TUN，范围和实测状态见 [验证记录](docs/validation.md)。
+v0.3.0 保持实验性桌面预发布。用户手工恢复成功，不能替代新封装在 Wi-Fi / 以太网切换、实际远控及真实 TUN 清理上的管理员验收。自动化套件不创建 TUN，范围和实测状态见 [验证记录](docs/validation.md)。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-All.ps1

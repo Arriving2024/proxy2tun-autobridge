@@ -67,7 +67,7 @@ function Test-P2THttpsForwarding {
     try {
         # -q must be first. There is deliberately no --insecure, --fail, or
         # redirect: HTTP 403 can prove working TLS/transport without service access.
-        $result=Invoke-P2TBoundedProcess -Path $curl -Arguments @('-q','--silent','--show-error','--noproxy','*','--proxy','','--connect-timeout','3','--max-time',([string]$TimeoutSeconds),'--head','--output','NUL','--dump-header',$headers,'--write-out','%{http_code}|%{time_total}',[string]$Url) -TimeoutMs (($TimeoutSeconds+2)*1000)
+        $result=Invoke-P2TBoundedProcess -Path $curl -Arguments @('-q','--silent','--show-error','--noproxy','*','--proxy','','--connect-timeout',([string]$TimeoutSeconds),'--max-time',([string]$TimeoutSeconds),'--head','--output','NUL','--dump-header',$headers,'--write-out','%{http_code}|%{time_total}',[string]$Url) -TimeoutMs (($TimeoutSeconds+2)*1000)
         $headerText=''
         if(Test-Path -LiteralPath $headers){
             $info=Get-Item -LiteralPath $headers
@@ -206,16 +206,26 @@ function Test-P2TFreshTunDns {
 
 function Test-P2TForwardingHealth {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$RuntimePath)
-    $dns=Test-P2TSystemDns
+    param([Parameter(Mandatory)][string]$RuntimePath,[switch]$Confirmation)
+    $dns=Test-P2TSystemDns -TimeoutSeconds $(if($Confirmation){8}else{5})
     # A unique negative query goes straight to our generated TUN DNS address,
     # bypassing Windows cache and the core's prior per-name cache. The positive
     # OS lookup remains a separate check of the normal application resolver path.
-    $freshDns=Test-P2TFreshTunDns
-    $https=Test-P2THttpsForwarding -RuntimePath $RuntimePath
+    $freshDns=Test-P2TFreshTunDns -TimeoutMs $(if($Confirmation){6000}else{3000})
+    $httpsTimeout=if($Confirmation){8}else{5}
+    $https=Test-P2THttpsForwarding -RuntimePath $RuntimePath -TimeoutSeconds $httpsTimeout
     # A second independent origin avoids rebuilding for a single blocked origin.
-    if(-not $https.TransportSuccess){$https=Test-P2THttpsForwarding -RuntimePath $RuntimePath -Url 'https://www.gstatic.com/generate_204'}
-    [pscustomobject]@{Success=($dns.Success -and $freshDns.Success -and $https.TransportSuccess);Dns=$dns;FreshDns=$freshDns;Https=$https}
+    if(-not $https.TransportSuccess){$https=Test-P2THttpsForwarding -RuntimePath $RuntimePath -TimeoutSeconds $httpsTimeout -Url 'https://www.gstatic.com/generate_204'}
+    $failureKind = if (-not $https.TransportSuccess) { 'Https' }
+    elseif (-not $dns.Success -and -not $freshDns.Success) { 'Dns' }
+    else { '' }
+    [pscustomobject]@{
+        Success = $dns.Success -and $freshDns.Success -and $https.TransportSuccess
+        FailureKind = $failureKind
+        Dns = $dns
+        FreshDns = $freshDns
+        Https = $https
+    }
 }
 
 function Get-P2TNetworkFingerprint {
