@@ -112,14 +112,24 @@ function Ensure-P2TDesktopDependency {
         $client=New-Object Net.WebClient
         try{
             [Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-            $client.Headers['User-Agent']='Proxy2TUN-AutoBridge/0.3.0'
+            $client.Headers['User-Agent']='Proxy2TUN-AutoBridge'
             $task=$client.DownloadFileTaskAsync([uri]'https://github.com/SagerNet/sing-box/releases/download/v1.14.2/sing-box-1.14.2-windows-amd64.zip',$archive)
             $deadline=[DateTime]::UtcNow.AddMinutes(5)
             while(-not $task.IsCompleted){
                 if((Test-Path -LiteralPath (Join-Path $RuntimePath 'desktop-stop.request')) -or [DateTime]::UtcNow -ge $deadline){$client.CancelAsync();throw 'DependencyDownloadCancelledOrTimedOut'}
                 Start-Sleep -Milliseconds 200
             }
-            $null=$task.GetAwaiter().GetResult()
+            try{$null=$task.GetAwaiter().GetResult()}
+            catch{
+                for($cause=$_.Exception;$cause;$cause=$cause.InnerException){
+                    if($cause -is [Net.WebException]){
+                        $reason='DependencyDownloadFailed: '+$cause.Status
+                        if($cause.Response -is [Net.HttpWebResponse]){$reason+='; HTTP='+[int]$cause.Response.StatusCode}
+                        throw $reason
+                    }
+                }
+                throw 'DependencyDownloadFailed: Unknown'
+            }
             if((Get-FileHash -LiteralPath $archive).Hash.ToLowerInvariant() -ne $zipHash){throw 'DependencyArchiveHashMismatch'}
             Add-Type -AssemblyName System.IO.Compression.FileSystem
             $zip=[IO.Compression.ZipFile]::OpenRead($archive)

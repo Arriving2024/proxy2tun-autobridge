@@ -1,6 +1,13 @@
 # Changelog
 
-## v0.3.0 — 2026-11-02 — local experimental desktop preview
+## v0.3.1 — experimental stability patch
+
+- Recheck owned routes, upstream and forwarding after a debounced network change. Keep a working TUN in place and reserve bounded recovery for verified failures.
+- Log upstream connection refusal, CONNECT/protocol errors, TLS probe failures and identity failures separately. Record the reason for stopping the TUN.
+- Show completed proxy checks and elapsed time during discovery. Report safe dependency download error categories.
+- Export a diagnostic text summary from the desktop or `Show-Logs.ps1 -Summary` with build hashes and selected controller events. Keep raw runtime data on the device.
+
+## v0.3.0 — experimental desktop prerelease
 
 ### Added
 
@@ -13,7 +20,7 @@
 
 ### Scope
 
-- Local preview only: no GitHub push or public Release is implied by this version declaration or by a local build.
+- Published as an experimental prerelease on 2026-11-12 (UTC+08:00).
 - Existing TUN instances remain conflict-protected. No default startup task/service, credential import, proprietary client distribution, manual Misty configuration overwrite or general UDP support is added.
 - Automatic checks, UI preview and local component validation do not establish long-term stability or authenticated application success on a second computer.
 

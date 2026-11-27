@@ -72,7 +72,7 @@ HTTPS probes use the system `curl.exe`, ignore proxy environment variables and u
 
 Probe classifications distinguish fresh DNS and system DNS errors/timeouts, TLS validation errors, transport errors/timeouts, successful HTTP, HTTP service errors and `CloudflareChallenge` (403 with `Cf-Mitigated: challenge`). A valid HTTP response proves the transport reached an HTTPS service; a challenge is not application access, login success, or remote-control health. An HTTP service error alone does not trigger a rebuild when DNS and HTTPS transport are healthy. Successful probes cannot establish every application's behavior.
 
-Physical adapters, default routes, addresses, DNS server configuration and interface metrics contribute to a network fingerprint; the dedicated TUN is excluded. Raw network details are hashed for comparison rather than copied into the health log. A stable fingerprint change after debounce requests one scoped rebuild. Interface-query failure is not interpreted as a confirmed network change.
+Physical adapter, route, address, resolver and metric changes contribute to a network fingerprint that excludes the owned TUN. The controller stores the comparison hash and logs when a debounced change triggers a forwarding check. It retains the TUN while forwarding works and applies the existing recovery limits when checks confirm failure.
 
 ## 有限恢复与配置回滚
 

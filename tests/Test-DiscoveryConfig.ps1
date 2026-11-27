@@ -354,7 +354,15 @@ try {
     $relatedCurrent.ProcessStartTime='2026-09-30T00:00:00.0000000Z'
     Assert-True (-not (Test-P2TProcessIdentity $candidate)) 'Restarted delegated core invalidates the binding before reuse'
     & $discoveryModule {function script:Connect-P2TLoopbackClient {param($ProxyHost,$ProxyPort,$TimeoutMs) throw 'Connect timed out.'}}
-    Assert-True (-not (Test-P2TProcessIdentity $candidate)) 'Unreachable endpoint cannot pass identity revalidation'
+    $failureKind=''
+    Assert-True (-not (Test-P2TProcessIdentity $candidate -FailureKind ([ref]$failureKind)) -and $failureKind -eq 'ProxyConnectFailed') 'Unreachable endpoint cannot pass identity revalidation'
+    & $discoveryModule {
+        function script:Connect-P2TLoopbackClient {
+            param($ProxyHost,$ProxyPort,$TimeoutMs)
+            throw [Net.Sockets.SocketException]::new([int][Net.Sockets.SocketError]::ConnectionRefused)
+        }
+    }
+    Assert-True (-not (Test-P2TProcessIdentity $candidate -FailureKind ([ref]$failureKind)) -and $failureKind -eq 'ProxyConnectionRefused') 'Identity check preserves refusal at the first socket instead of reporting a process change'
 } finally {$server.Dispose()}
 $discoveryModule=Import-Module (Join-Path $repository 'src\Discovery.psm1') -Force -PassThru
 Write-Host ('PASS: {0} discovery/config assertions on PowerShell {1}. Offline fixtures do not validate a live TUN.' -f $script:assertionCount,$PSVersionTable.PSVersion)

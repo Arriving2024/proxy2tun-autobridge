@@ -1,11 +1,12 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]
-param([ValidateSet('Run','Stop','Detect')][string]$Action='Run')
+param([ValidateSet('Run','Stop','Detect','Diagnose')][string]$Action='Run')
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $runtime=Join-Path $root 'runtime'
-Import-Module (Join-Path $root 'src\Desktop.psm1') -Force
+if($Action -eq 'Diagnose'){& (Join-Path $root 'Show-Logs.ps1') -Summary;return}
+Import-Module (Join-Path $root 'src\Desktop.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $root 'src\Lifecycle.psm1') -Force
 $desktopStop=Join-Path $runtime 'desktop-stop.request'
 if($Action -eq 'Stop'){
@@ -35,7 +36,19 @@ try{
         exit 2
     }
     Write-P2TDesktopStatus $runtime 'Preparing' '正在准备网络组件。'
-    $binary=Ensure-P2TDesktopDependency -Root $root -RuntimePath $runtime
+    $logPath=Join-Path $runtime 'bridge.log'
+    if($env:PROXY2TUN_DESKTOP_SHA256 -match '^[0-9a-fA-F]{64}$'){
+        Write-P2TLog -Path $logPath -Message ("Build: desktop SHA256="+$env:PROXY2TUN_DESKTOP_SHA256)
+    }
+    try{$binary=Ensure-P2TDesktopDependency -Root $root -RuntimePath $runtime}
+    catch{
+        $failure=$_.Exception.Message
+        if($failure -notmatch '^(?:DependencyDownload(?:Failed: [A-Za-z]+(?:; HTTP=[1-5][0-9]{2})?|CancelledOrTimedOut)|Dependency(?:ArchiveHash|ArchiveEntry|ExecutableHash)Mismatch|DependencyHashMismatch: existing binary was preserved\.)$'){
+            $failure='DependencyPreparationFailed'
+        }
+        Write-P2TLog -Path $logPath -Message ("Dependency check: "+$failure)
+        throw
+    }
     if(Test-Path -LiteralPath $desktopStop){Write-P2TDesktopStatus $runtime 'Stopped' '已取消启动。';return}
     Write-P2TDesktopStatus $runtime 'Scanning' '正在识别本机代理软件。'
     & (Join-Path $root 'Start-Bridge.ps1') -Mode Watch -SingBoxPath $binary -DesktopMode -LossThreshold 3

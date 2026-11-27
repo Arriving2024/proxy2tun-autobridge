@@ -68,6 +68,28 @@ try{
     try{Ensure-P2TDesktopDependency -Root $scratch -RuntimePath $runtime|Out-Null}catch{$failure=$_.Exception.Message}
     Assert-Desktop ($failure -like 'DependencyHashMismatch:*' -and (Get-FileHash -LiteralPath $fake).Hash -eq $before) 'A changed existing dependency is rejected intact before execution or any download.'
 
+    Copy-Item -LiteralPath (Join-Path $root 'Show-Logs.ps1'),(Join-Path $root 'VERSION') -Destination $scratch
+    $fixtureEvents=@(
+        '2026-11-08 10:35:37 Network change observed; checking current forwarding.'
+        '2026-11-08 10:35:39 Network recheck passed; current TUN retained.'
+        '2026-11-08 10:35:45 TUN stopped: reason=StopRequested; graceful=False; owned adapter cleanup completed.'
+        '2026-11-08 10:35:46 Dependency check: DependencyDownloadFailed: ProtocolError; HTTP=503'
+        '2026-11-08 10:35:47 Scan: candidates=2; elapsedMs=74000'
+        '2026-11-08 10:35:48 Upstream check: ProxyConnectionRefused'
+        '2026-11-08 10:35:49 TUN ready: p2t-ba5eba11ab; socks5 upstream; DNS and certificate-validated HTTPS passed. HTTP service errors/challenges do not trigger a transport restart.'
+        '2026-11-08 10:35:50 Unrecognized line: C:\Users\Private\secret.txt, https://personal.example'
+        '2026-11-08 10:35:51 Scan: candidates=2; elapsedMs=700; https://personal.example'
+    )
+    [IO.File]::WriteAllLines((Join-Path $runtime 'bridge.log'),$fixtureEvents)
+    [IO.File]::WriteAllText((Join-Path $runtime 'config.json'),'PrivateFixtureConfig')
+    [IO.File]::WriteAllText((Join-Path $runtime 'core-fixture.log'),'PrivateFixtureCore')
+    $summary=(& (Join-Path $scratch 'Show-Logs.ps1') -Summary) -join "`n"
+    foreach($line in $fixtureEvents[0..5]){
+        Assert-Desktop ($summary.Contains($line)) 'Shareable diagnostic includes the known controller event.'
+    }
+    Assert-Desktop ($summary.Contains('TUN ready; upstream=socks5;') -and
+        $summary -notmatch 'ba5eba11ab|Private|personal\.example') 'Shareable diagnostic omits adapter IDs, unknown fields, raw config and traffic.'
+
     Import-Module (Join-Path $root 'src\Lifecycle.psm1') -Force
     Initialize-P2TNative
     $ready=Join-Path $scratch 'hidden-ready.txt'

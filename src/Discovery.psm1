@@ -181,6 +181,15 @@ function Test-P2TTlsServerHello {
     return ($reply[0] -eq 2 -and $reply[4] -eq 3 -and $reply[5] -le 3 -and $messageLength -ge 38 -and $messageLength -le 18428)
 }
 
+function Get-P2TConnectFailureKind([Exception]$Exception) {
+    for ($cause = $Exception; $cause; $cause = $cause.InnerException) {
+        if ($cause -is [Net.Sockets.SocketException] -and $cause.SocketErrorCode -eq [Net.Sockets.SocketError]::ConnectionRefused) {
+            return 'ProxyConnectionRefused'
+        }
+    }
+    return 'ProxyConnectFailed'
+}
+
 function Test-P2TProxyEndpoint {
     [CmdletBinding()]
     param(
@@ -194,12 +203,14 @@ function Test-P2TProxyEndpoint {
         [switch]$InspectRelated
     )
     $client = $null; $stream = $null; $clock = [Diagnostics.Stopwatch]::StartNew()
+    $classification = 'ProxyConnectFailed'
     try {
         $ip = [Net.IPAddress]::Parse($ProxyHost)
         if (-not [Net.IPAddress]::IsLoopback($ip)) { throw 'Only loopback proxies are supported.' }
         $target = [Net.IPAddress]::Parse($ProbeAddress)
         if ($target.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) { throw 'ProbeAddress must be an IPv4 literal.' }
         $client = Connect-P2TLoopbackClient -ProxyHost $ProxyHost -ProxyPort $ProxyPort -TimeoutMs $TimeoutMs
+        $classification = 'ProxyProtocolFailed'
         $stream = $client.GetStream(); $stream.WriteTimeout = $TimeoutMs; $stream.ReadTimeout = $TimeoutMs
         if ($Protocol -eq 'socks5') {
             [byte[]]$greeting = @(5,1,0); $stream.Write($greeting,0,$greeting.Length)
@@ -232,7 +243,9 @@ function Test-P2TProxyEndpoint {
             if ($status -match '^HTTP/1\.[01] 407(?:\s|\r)') { throw 'HTTP proxy authentication is unsupported.' }
             if ($status -notmatch '^HTTP/1\.[01] 200(?:\s|\r)') { throw 'HTTP CONNECT was not accepted.' }
         }
+        $classification = 'ProxyTlsProbeFailed'
         if (-not (Test-P2TTlsServerHello $stream $clock $TimeoutMs)) { throw 'CONNECT did not return a TLS ServerHello.' }
+        $classification = 'ProxyIdentityUnverified'
         $identity=$null
         $related=@()
         if ($RequireIdentity -or $InspectRelated) {
@@ -245,9 +258,12 @@ function Test-P2TProxyEndpoint {
             if($null -eq $owner -or $owner -ne $identity.ProcessId){throw 'ListenerMetadataUnknown: proxy identity changed during chain inspection.'}
             $related=@(Get-P2TRelatedDirectProcesses -Identity $identity -Connections $connections -ServerEndpoint $client.Client.RemoteEndPoint)
         }
-        [pscustomobject]@{ Success = $true; Protocol = $Protocol; Reason = 'CONNECT and TLS ServerHello received.'; Identity=$identity; RelatedDirectProcesses=$related }
+        [pscustomobject]@{ Success = $true; Protocol = $Protocol; Classification='ProxyReady'; Reason = 'CONNECT and TLS ServerHello received.'; Identity=$identity; RelatedDirectProcesses=$related }
     } catch {
-        [pscustomobject]@{ Success = $false; Protocol = $Protocol; Reason = $_.Exception.Message; Identity=$null; RelatedDirectProcesses=@() }
+        if ($classification -eq 'ProxyConnectFailed') {
+            $classification = Get-P2TConnectFailureKind $_.Exception
+        }
+        [pscustomobject]@{ Success = $false; Protocol = $Protocol; Classification=$classification; Reason = $_.Exception.Message; Identity=$null; RelatedDirectProcesses=@() }
     } finally {
         if ($stream) { $stream.Dispose() }
         if ($client) { $client.Close() }
@@ -260,7 +276,7 @@ function Get-P2TProxyCandidates {
     param(
         [ValidateRange(100,30000)][int]$TimeoutMs = 1500, [string]$ProbeAddress = '1.1.1.1', [int]$ProbePort = 443,
         [string]$ProxyHost='', [ValidateRange(0,65535)][int]$ProxyPort=0, [ValidateSet('','socks5','http')][string]$ProxyProtocol='',
-        [switch]$IncludeEstablished
+        [switch]$IncludeEstablished, [scriptblock]$OnProgress, [string]$StopPath
     )
     if ($ProxyHost -ieq 'localhost') { $ProxyHost='127.0.0.1' }
     if ($ProxyHost) {
@@ -311,12 +327,19 @@ function Get-P2TProxyCandidates {
             }
         }
     }
-    foreach ($endpoint in ($endpoints.Values | Sort-Object Priority,Port,Host)) {
-        if ($ProxyHost -and $endpoint.Host -ne $ProxyHost) { continue }
-        if ($ProxyPort -gt 0 -and $endpoint.Port -ne $ProxyPort) { continue }
-        $protocols=if ($ProxyProtocol) { @($ProxyProtocol) } else { @('socks5','http') }
+    $orderedEndpoints=@($endpoints.Values | Where-Object {
+        (-not $ProxyHost -or $_.Host -eq $ProxyHost) -and ($ProxyPort -eq 0 -or $_.Port -eq $ProxyPort)
+    } | Sort-Object Priority,Port,Host)
+    $protocols=@(if ($ProxyProtocol) { $ProxyProtocol } else { 'socks5'; 'http' })
+    $total=$orderedEndpoints.Count*$protocols.Count
+    $completed=0
+    $scanClock=[Diagnostics.Stopwatch]::StartNew()
+    foreach ($endpoint in $orderedEndpoints) {
         foreach ($protocol in $protocols) {
+            if ($StopPath -and (Test-Path -LiteralPath $StopPath)) { return }
+            if ($OnProgress) { $null=& $OnProgress $completed $total ([int]$scanClock.Elapsed.TotalSeconds) }
             $probe = Test-P2TProxyEndpoint -ProxyHost $endpoint.Host -ProxyPort $endpoint.Port -Protocol $protocol -TimeoutMs $TimeoutMs -ProbeAddress $ProbeAddress -ProbePort $ProbePort -RequireIdentity -InspectRelated:$IncludeEstablished
+            $completed++
             if ($probe.Success) {
                 $identity=$probe.Identity
                 if (-not $identity -or [int]$identity.ProcessId -le 0) { Write-Verbose ('Skipping port {0}: connected proxy identity unavailable.' -f $endpoint.Port); continue }
@@ -334,6 +357,7 @@ function Get-P2TProxyCandidates {
             Write-Verbose ('{0}:{1} {2}: {3}' -f $endpoint.Host,$endpoint.Port,$protocol,$probe.Reason)
         }
     }
+    if ($OnProgress) { $null=& $OnProgress $completed $total ([int]$scanClock.Elapsed.TotalSeconds) }
 }
 
 function Get-P2TFamilyKey {
@@ -377,11 +401,16 @@ function Select-P2TProxyCandidate {
 
 function Test-P2TProcessIdentity {
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$Candidate)
+    param([Parameter(Mandatory)]$Candidate,[ref]$FailureKind)
     $client=$null
+    if($FailureKind){$FailureKind.Value='UpstreamIdentityUnverified'}
     try {
         if ([int]$Candidate.ProcessId -le 0) { return $false }
-        $client=Connect-P2TLoopbackClient -ProxyHost $Candidate.Host -ProxyPort $Candidate.Port -TimeoutMs 1500
+        try{$client=Connect-P2TLoopbackClient -ProxyHost $Candidate.Host -ProxyPort $Candidate.Port -TimeoutMs 1500}
+        catch{
+            if($FailureKind){$FailureKind.Value=Get-P2TConnectFailureKind $_.Exception}
+            return $false
+        }
         $identity=Get-P2TConnectedProcessIdentity -Client $client
         if (-not $identity -or $identity.ProcessId -ne $Candidate.ProcessId -or $identity.ProcessPath -ine $Candidate.ProcessPath -or $identity.ProcessStartTime -ne $Candidate.ProcessStartTime) { return $false }
         if ($Candidate.PSObject.Properties['ParentProcessStartTime'] -and $Candidate.ParentProcessStartTime -and ($identity.ParentPath -ine $Candidate.ParentPath -or $identity.ParentProcessStartTime -ne $Candidate.ParentProcessStartTime)) { return $false }
@@ -394,6 +423,7 @@ function Test-P2TProcessIdentity {
                 if($current.ParentProcessStartTime -ne $expected.ParentProcessStartTime -or $current.ParentPath -ine $expected.ParentPath){return $false}
             }
         }
+        if($FailureKind){$FailureKind.Value=''}
         return $true
     } catch { return $false }
     finally { if ($client) { $client.Dispose() } }

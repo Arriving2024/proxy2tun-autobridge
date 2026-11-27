@@ -42,7 +42,7 @@ namespace Proxy2Tun.Desktop {
     }
 
     internal static class Program {
-        internal const string Version = "0.3.0";
+        internal const string Version = "0.3.1";
         internal const string PayloadResource = "Proxy2Tun.Payload.zip";
         internal static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
 
@@ -376,14 +376,14 @@ namespace Proxy2Tun.Desktop {
             choose.Text = "绑定此代理"; choose.Width = 120; choose.Height = 32; choose.Visible = false; choose.Click += ChooseClick;
             selection.Controls.Add(choices); selection.Controls.Add(choose);
             FlowLayoutPanel buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-            start.Text = "开始 / 重试"; stop.Text = "停止全局代理"; diagnostics.Text = "打开诊断";
+            start.Text = "开始 / 重试"; stop.Text = "停止全局代理"; diagnostics.Text = "导出诊断";
             foreach (Button button in new[] { start, stop, diagnostics }) { button.Width = 145; button.Height = 36; button.Margin = new Padding(0, 0, 12, 0); buttons.Controls.Add(button); }
             start.Click += async delegate {
                 if (BackendAlive && state != null && state.Status == "RecoveryPaused") await StopAsync(false);
                 await StartAsync();
             };
             stop.Click += async delegate { await StopAsync(false); };
-            diagnostics.Click += delegate { OpenDiagnostics(); };
+            diagnostics.Click += async delegate { await ExportDiagnosticsAsync(); };
             Label note = new Label { Text = preview ? "界面预览：不会启动代理、创建 TUN 或更改网络。" : "关闭窗口会收至托盘；在托盘中选择“退出并停止”可退出。\r\n一般 UDP / QUIC 不支持；程序不会设置开机常驻。", Dock = DockStyle.Bottom, Height = 50, ForeColor = Color.FromArgb(100, 110, 125), Font = new Font(Font.FontFamily, 9F) };
             Panel statusPanel = new Panel { Dock = DockStyle.Fill }; statusPanel.Controls.Add(detail);
             layout.Controls.Add(title, 0, 0); layout.Controls.Add(subtitle, 0, 1); layout.Controls.Add(headline, 0, 2); layout.Controls.Add(statusPanel, 0, 3); layout.Controls.Add(endpoint, 0, 4); layout.Controls.Add(selection, 0, 5);
@@ -429,6 +429,7 @@ namespace Proxy2Tun.Desktop {
                     if (backend != null) { backend.Dispose(); backend = null; }
                     if (job != null) { job.Dispose(); job = null; }
                     Process process = new Process { StartInfo = BackendInfo("Run") };
+                    process.StartInfo.EnvironmentVariables["PROXY2TUN_DESKTOP_SHA256"] = Program.HashFile(Application.ExecutablePath);
                     process.OutputDataReceived += CaptureOutput; process.ErrorDataReceived += CaptureOutput;
                     backendStartedUtc = DateTime.UtcNow;
                     if (!process.Start()) throw new IOException("无法启动后台控制器。");
@@ -506,9 +507,9 @@ namespace Proxy2Tun.Desktop {
                 catch (UnauthorizedAccessException) { }
                 // Liveness and freshness also run after a failed status read.
                 if (!BackendAlive && state != null && state.Status != "Stopped" && state.Status != "ExistingTun" && state.Status != "Error" && state.Status != "RecoveryPaused")
-                    ShowState(new DesktopStatus { Status = "Error", Message = "后台控制器已退出，请打开诊断查看原因，再点击重试。" });
+                    ShowState(new DesktopStatus { Status = "Error", Message = "后台控制器已退出，请导出诊断查看原因，再点击重试。" });
                 else if (!BackendAlive && state == null)
-                    ShowState(new DesktopStatus { Status = "Error", Message = "后台控制器未能启动，请打开诊断查看原因。" });
+                    ShowState(new DesktopStatus { Status = "Error", Message = "后台控制器未能启动，请导出诊断查看原因。" });
                 else if (state != null && state.Status == "Running" && !Program.IsFreshStatus(state.UpdatedUtc, DateTime.UtcNow))
                     ShowState(new DesktopStatus { Status = "Verifying", Message = "运行状态尚未更新，正在重新核实连接；此时不会显示验证成功。" });
             }
@@ -540,7 +541,7 @@ namespace Proxy2Tun.Desktop {
         void RefreshButtons() {
             start.Enabled = !busy && (!BackendAlive || preview || (state != null && state.Status == "RecoveryPaused"));
             stop.Enabled = !busy;
-            diagnostics.Enabled = !busy;
+            diagnostics.Enabled = !busy && !preview;
             if (busy) choose.Enabled = false;
         }
         void ChooseClick(object sender, EventArgs args) {
@@ -555,11 +556,36 @@ namespace Proxy2Tun.Desktop {
                 choose.Enabled = false; detail.Text = "已选择代理，正在核实并绑定…";
             } catch (Exception ex) { MessageBox.Show("无法提交选择：" + ex.Message, "Proxy2TUN", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }
-        void OpenDiagnostics() {
+        async Task ExportDiagnosticsAsync() {
+            if (preview || busy) return;
+            using (SaveFileDialog dialog = new SaveFileDialog()) {
+                dialog.Title = "保存脱敏诊断";
+                dialog.FileName = "Proxy2TUN-diagnostics.txt";
+                dialog.Filter = "诊断文本 (*.txt)|*.txt";
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                await SaveDiagnosticsAsync(dialog.FileName);
+            }
+        }
+        async Task SaveDiagnosticsAsync(string output) {
+            busy = true; RefreshButtons();
             try {
-                Program.CheckNoReparse(runtime); Directory.CreateDirectory(runtime);
-                Process.Start(new ProcessStartInfo("explorer.exe", Program.Quote(runtime)) { UseShellExecute = true });
-            } catch (Exception ex) { MessageBox.Show(ex.Message, "无法打开诊断"); }
+                await Task.Run(delegate {
+                    Program.CheckNoReparse(runtime);
+                    Program.CheckNoReparse(output);
+                    using (Process helper = Process.Start(BackendInfo("Diagnose"))) {
+                        using (ProcessJob helperJob = new ProcessJob(helper)) {
+                            Task<string> summary = helper.StandardOutput.ReadToEndAsync();
+                            Task<string> errors = helper.StandardError.ReadToEndAsync();
+                            if (!helper.WaitForExit(10000) || helper.ExitCode != 0 ||
+                                !Task.WaitAll(new Task[] { summary, errors }, 1000))
+                                throw new IOException("Diagnostic export failed.");
+                            File.WriteAllText(output, summary.Result, new UTF8Encoding(true));
+                        }
+                    }
+                });
+                MessageBox.Show(this, "脱敏诊断已保存，可以把这个文本文件发给维护者。", "Proxy2TUN");
+            } catch (Exception) { MessageBox.Show(this, "无法保存诊断，请换一个可写位置后重试。", "Proxy2TUN"); }
+            finally { busy = false; RefreshButtons(); }
         }
         void RestoreWindow() { Show(); WindowState = FormWindowState.Normal; Activate(); }
         void OnFormClosingRequested(object sender, FormClosingEventArgs args) {

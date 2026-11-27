@@ -36,11 +36,18 @@ if($LASTEXITCODE -ne 0 -or $version -notmatch 'sing-box version 1\.14\.2(?:\s|$)
 $runtime=Join-Path $PSScriptRoot 'runtime'
 $null=New-Item -ItemType Directory -Force -Path $runtime
 $configPath=Join-Path $runtime 'config.json'
-if($DesktopMode){Import-Module (Join-Path $PSScriptRoot 'src\Desktop.psm1') -Force}
+if($DesktopMode){Import-Module (Join-Path $PSScriptRoot 'src\Desktop.psm1') -Force -DisableNameChecking}
 function Save-BridgeState {
     param($State,[string]$Path)
     Write-P2TState -State $State -Path $Path
     if($DesktopMode){try{Sync-P2TDesktopStatus -State $State -RuntimePath $runtime}catch{[Console]::Error.WriteLine('Desktop status update unavailable; network cleanup remains enabled.')}}
+}
+function Write-ScanProgress {
+    param([int]$Completed,[int]$Total,[int]$Seconds)
+    try {
+        Write-P2TDesktopStatus -RuntimePath $runtime -Status 'Scanning' -Message (
+            '正在识别代理。已完成 {0}/{1} 项检测，耗时 {2} 秒。' -f $Completed,$Total,$Seconds)
+    } catch { }
 }
 if($Mode -eq 'Generate'){
     $candidate=Select-P2TProxyCandidate -Candidates @(Get-P2TProxyCandidates @selection) @selection
@@ -87,9 +94,12 @@ try {
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
     $state=[ordered]@{Schema=1;Root=$PSScriptRoot;Owner=(Get-P2TProcessStamp $PID);DesktopMode=[bool]$DesktopMode;Child=$null;InterfaceName=$null;AdapterGuid=$null;Status='Waiting';RecoveryFailures=0}
     Save-BridgeState -State $state -Path $statePath
-    Write-P2TLog -Path $logPath -Message 'Proxy2TUN AutoBridge v0.3.0. Watcher; DNS and HTTPS checks enabled. Ctrl+C or Stop-Bridge stops it.'
+    $productVersion=(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'VERSION') -Raw).Trim()
+    Write-P2TLog -Path $logPath -Message ("Proxy2TUN AutoBridge v$productVersion. Watcher; DNS and HTTPS checks enabled. Ctrl+C or Stop-Bridge stops it.")
+    Write-P2TLog -Path $logPath -Message ('Build: watcher SHA256={0}; core SHA256={1}' -f (Get-FileHash -LiteralPath $PSCommandPath).Hash,(Get-FileHash -LiteralPath $SingBoxPath).Hash)
     $network=New-P2TNetworkObservation -Snapshot (Get-P2TNetworkFingerprint)
     $candidate=$null;$misses=0;$tunMisses=0;$forwardingMisses=0;$lastNotice='';$scanAt=[DateTime]::MinValue;$healthAt=[DateTime]::MinValue;$lastHealth='';$lastForwardingFailure=''
+    $lastUpstreamFailure='';$networkRecheck=$false;$choicePending=$false
     if($DesktopMode){Write-P2TDesktopStatus -RuntimePath $runtime -Status 'Scanning' -Message '正在识别本机代理软件。'}
     while(-not (Test-Path -LiteralPath $stopPath)){
         if([DateTime]::UtcNow -lt $scanAt){Start-Sleep -Milliseconds 200;continue}
@@ -103,16 +113,31 @@ try {
         if($child){
             $failure=''
             if($child.HasExited){$failure='CoreExited'}
-            elseif($networkChanged){$failure='PhysicalNetworkChanged'}
             else{
+                if($networkChanged){
+                    $networkRecheck=$true
+                    $healthAt=[DateTime]::MinValue
+                    Write-P2TLog -Path $logPath -Message 'Network change observed; checking current forwarding.'
+                }
                 $tunNetwork=Test-P2TOwnedTunRoutes -InterfaceName $state.InterfaceName -AdapterGuid $state.AdapterGuid
                 if($tunNetwork.Success){$tunMisses=0}else{$tunMisses++;$recovery.HealthySince=$null}
-                $upstreamHealthy=Test-P2TProcessIdentity -Candidate $candidate
-                if($upstreamHealthy){$probe=Test-P2TProxyEndpoint -ProxyHost $candidate.Host -Port $candidate.Port -Protocol $candidate.Protocol;$upstreamHealthy=$probe.Success}
-                if($upstreamHealthy){$misses=0}else{$misses++;$recovery.HealthySince=$null}
+                $upstreamFailure=''
+                if(Test-P2TProcessIdentity -Candidate $candidate -FailureKind ([ref]$upstreamFailure)){
+                    $probe=Test-P2TProxyEndpoint -ProxyHost $candidate.Host -Port $candidate.Port -Protocol $candidate.Protocol
+                    if(-not $probe.Success){$upstreamFailure=$probe.Classification}
+                }
+                if(-not $upstreamFailure){$misses=0}
+                else{
+                    $recovery.HealthySince=$null
+                    $misses++
+                    if($upstreamFailure -ne $lastUpstreamFailure){
+                        Write-P2TLog -Path $logPath -Message ("Upstream check: "+$upstreamFailure)
+                    }
+                }
+                $lastUpstreamFailure=$upstreamFailure
                 if($tunMisses -ge $LossThreshold){$failure=$tunNetwork.Classification}
-                elseif($misses -ge $LossThreshold){$failure='UpstreamUnavailableOrIdentityChanged'}
-                elseif($tunNetwork.Success -and $upstreamHealthy -and [DateTime]::UtcNow -ge $healthAt){
+                elseif($misses -ge $LossThreshold){$failure=$upstreamFailure}
+                elseif($tunNetwork.Success -and -not $upstreamFailure -and [DateTime]::UtcNow -ge $healthAt){
                     $health=Test-P2TForwardingHealth -RuntimePath $runtime -Confirmation:($forwardingMisses -ge ($LossThreshold - 1))
                     $healthAt=[DateTime]::UtcNow.AddSeconds($HealthIntervalSeconds)
                     $summary='{0}; {1}; HTTPS {2}, HTTP {3}, curl {4}' -f $health.Dns.Classification,$health.FreshDns.Classification,$health.Https.Classification,$health.Https.HttpStatus,$health.Https.CurlExitCode
@@ -126,12 +151,18 @@ try {
                     }
                     if($DesktopMode){$state.LastHealthPassed=[bool]$health.Success;$state.LastHealthUtc=[DateTime]::UtcNow.ToString('o');Save-BridgeState -State $state -Path $statePath}
                     if($summary -ne $lastHealth -or -not $health.Success){Write-P2TLog -Path $logPath -Message ('Forwarding check: '+$summary);$lastHealth=$summary}
+                    if($networkRecheck -and -not $health.FailureKind){
+                        Write-P2TLog -Path $logPath -Message 'Network recheck passed; current TUN retained.'
+                        $networkRecheck=$false
+                    }
                     if($forwardingMisses -ge $LossThreshold){$failure='TunAliveButForwardingFailed'}
                 }
             }
+            if(Test-Path -LiteralPath $stopPath){break}
             if($failure){
-                Stop-P2TOwnedChild -Child $child -State $state -StatePath $statePath -LogPath $logPath
+                Stop-P2TOwnedChild -Child $child -State $state -StatePath $statePath -LogPath $logPath -Reason $failure
                 $child=$null;$candidate=$null;$misses=0;$tunMisses=0;$forwardingMisses=0
+                $networkRecheck=$false;$lastUpstreamFailure=''
                 Write-RecoveryState -Reason $failure
             }
             continue
@@ -142,9 +173,22 @@ try {
             continue
         }
         try{
+            $scanClock=[Diagnostics.Stopwatch]::StartNew()
             if($DesktopMode){
-                $candidate=Select-P2TDesktopCandidate -Candidates @(Get-P2TProxyCandidates @selection -IncludeEstablished) -RuntimePath $runtime
-            }else{$candidate=Select-P2TProxyCandidate -Candidates @(Get-P2TProxyCandidates @selection) @selection}
+                $progress=if(-not $choicePending){${function:Write-ScanProgress}}else{$null}
+                $candidates=@(Get-P2TProxyCandidates @selection -IncludeEstablished -OnProgress $progress -StopPath $stopPath)
+                if(Test-Path -LiteralPath $stopPath){break}
+                $candidate=Select-P2TDesktopCandidate -Candidates $candidates -RuntimePath $runtime
+                $choicePending=(-not $candidate -and $candidates.Count -gt 0)
+            }else{
+                $candidates=@(Get-P2TProxyCandidates @selection -StopPath $stopPath)
+                if(Test-Path -LiteralPath $stopPath){break}
+                $candidate=Select-P2TProxyCandidate -Candidates $candidates @selection
+            }
+            if($candidate -or $lastNotice -ne 'ScanComplete'){
+                Write-P2TLog -Path $logPath -Message ('Scan: candidates={0}; elapsedMs={1}' -f $candidates.Count,$scanClock.ElapsedMilliseconds)
+                $lastNotice='ScanComplete'
+            }
             if(-not $candidate -or -not (Test-P2TProcessIdentity -Candidate $candidate)){continue}
             if(Get-Process -Name 'sing-box' -ErrorAction SilentlyContinue){throw 'AnotherCorePresent'}
             $state.InterfaceName='p2t-'+[guid]::NewGuid().ToString('N').Substring(0,10)
@@ -197,7 +241,7 @@ try {
             # Stop and verify cleanup before replacing configuration. A cleanup
             # failure escapes: starting a second child would be unsafe.
             $startError=$_.Exception.Message
-            if($child){Stop-P2TOwnedChild -Child $child -State $state -StatePath $statePath -LogPath $logPath;$child=$null}
+            if($child){Stop-P2TOwnedChild -Child $child -State $state -StatePath $statePath -LogPath $logPath -Reason 'StartupFailed';$child=$null}
             if($transaction){Restore-P2TSingBoxConfig -Transaction $transaction;$transaction=$null;Write-P2TLog -Path $logPath -Message 'Failed startup configuration rolled back after owned TUN teardown.'}
             $candidate=$null
             $reason=if($startError -in @('AnotherCorePresent','AdapterNameCollision','UpstreamChangedBeforeStart','TunRoutesNotReady','StartupDnsOrHttpsVerificationFailed')){$startError}else{'StartupOrDiscoveryError'}
@@ -206,7 +250,12 @@ try {
     }
 }finally{
     try{
-        if($state){Stop-P2TOwnedChild -Child $child -State $state -StatePath $statePath -LogPath $logPath;$child=$null}
+        if($state){
+            $reason=if(Test-Path -LiteralPath $stopPath){'StopRequested'}else{'WatcherExit'}
+            Stop-P2TOwnedChild -Child $child -State $state -StatePath $statePath -LogPath $logPath -Reason $reason
+            $child=$null
+            Write-P2TLog -Path $logPath -Message ("Watcher ended: "+$reason)
+        }
         if($transaction){Restore-P2TSingBoxConfig -Transaction $transaction;$transaction=$null}
         if($state){$state.Status='Stopped';Save-BridgeState -State $state -Path $statePath}
     }finally{

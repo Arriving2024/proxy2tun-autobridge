@@ -1,14 +1,16 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.3.0',
+    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [string]$OutputDirectory
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Split-Path $PSScriptRoot -Parent))
 if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitProcess) { throw 'Build on 64-bit Windows with Windows PowerShell 5.1 or newer.' }
-if (([IO.File]::ReadAllText((Join-Path $repo 'VERSION'))).Trim() -cne $Version) { throw 'Build version does not match VERSION.' }
+$sourceVersion=([IO.File]::ReadAllText((Join-Path $repo 'VERSION'))).Trim()
+if(-not $Version){$Version=$sourceVersion}
+if ($sourceVersion -cne $Version -or $Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Build version does not match VERSION.' }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repo ('dist\desktop-' + $Version) }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 if ($OutputDirectory -eq $repo) { throw 'Use a separate build output directory.' }

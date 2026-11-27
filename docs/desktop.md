@@ -1,12 +1,12 @@
 # 双击桌面预览
 
-v0.3.0 是实验性桌面预发布。已有命令行接口继续可用。
+v0.3.1 是实验性桌面预发布。已有命令行接口继续可用。
 
 ## 使用
 
 1. 打开原代理客户端，完成它自己的登录、节点选择和连接。客户端需要提供本机无需认证的 SOCKS5 或 HTTP CONNECT 入口。
-2. 双击 `Proxy2TUN-AutoBridge-v0.3.0.exe`。程序校验内置源码并释放到 `%LOCALAPPDATA%\Proxy2TUN-AutoBridge\desktop-0.3.0`；需要启动 TUN 时，Windows 会请求一次管理员权限。选择“是”后继续。取消权限不会开启 TUN。
-3. 程序自动识别当前可用代理、核实进程归属并生成独立配置。唯一可用代理或当前系统代理所属的软件自动绑定；若多个独立代理软件同时可用，界面会要求选择一次。没有找到代理时保持等待，打开客户端后可重试。
+2. 双击 `Proxy2TUN-AutoBridge-v0.3.1.exe`。程序校验内置源码并释放到 `%LOCALAPPDATA%\Proxy2TUN-AutoBridge\desktop-0.3.1`；需要启动 TUN 时，Windows 会请求一次管理员权限。选择“是”后继续。取消权限不会开启 TUN。
+3. 程序自动识别当前可用代理、核实进程归属并生成独立配置。唯一可用代理或当前系统代理所属的软件自动绑定；若多个独立代理软件同时可用，界面会要求选择一次。扫描时显示检测项数和耗时。没有找到代理时保持等待，打开客户端后可重试。
 4. 首次使用自动获取固定版本 sing-box 1.14.2，并核对官方压缩包的固定 SHA-256。下载失败时，界面显示原因，检查网络和原客户端后重试。未通过校验的文件不执行。
 5. 只有网卡、路由、新查询 DNS、系统 DNS 和证书验证的 HTTPS 通过后，才显示运行成功。保留状态窗口可查看当前状态、停止、重试和诊断入口。
 
@@ -32,7 +32,7 @@ HTTP 401、403、404、503 等响应可以证明 TLS/HTTP 传输到达，不能�
 
 桌面 EXE 内仅嵌入本项目源码、文档和许可证，不嵌入 sing-box、代理软件、节点、订阅或私人配置。源码载荷通过 `desktop-payload.json` 列出路径和 SHA-256；安装归属记录为 `.proxy2tun-desktop-install.json`。已有相同版本的文件若被修改，会拒绝静默覆盖。
 
-释放目录中的 `runtime` 包含状态、生成配置和诊断，可能含本机路径及连接信息。问题反馈时先脱敏，不要上传整个目录或原代理客户端的配置。
+反馈时点击 **导出诊断**，保存文本文件。文件包含构建校验值、扫描耗时、健康检查和停止原因。设备上的 `runtime` 仍保留原始状态、生成配置和核心日志，供本机调试。
 
 停止本实例后，在释放目录中运行 `uninstall.ps1` 可删除本项目的已登记文件。桌面卸载不要求依赖已经下载；已下载的 sing-box 只有在固定版本、校验收据和文件哈希相符时才移除。默认保留 `runtime` 和用户自行放入的文件，`-PurgeData` 显式清除运行数据。桌面 EXE 本身位于释放目录之外，可在退出后手动删除。共享 Windows TUN 驱动不会被卸载。
 
@@ -41,10 +41,10 @@ HTTP 401、403、404、503 等响应可以证明 TLS/HTTP 传输到达，不能�
 在 Windows 11 x64 的 64 位 PowerShell 中执行：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Build-Desktop.ps1 -OutputDirectory 'C:\Builds\Proxy2TUN-desktop-0.3.0'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Build-Desktop.ps1 -OutputDirectory 'C:\Builds\Proxy2TUN-desktop-0.3.1'
 ```
 
-输出目录应为新的构建目录；同名 EXE 或校验文件存在时拒绝覆盖。构建使用系统 .NET Framework 的 x64 C# 编译器及 Windows Forms，不安装额外包。产物为 `Proxy2TUN-AutoBridge-v0.3.0.exe` 和 `SHA256SUMS.txt`。构建器校验全部显式载荷文件、ZIP 内容、内嵌资源与 x64 GUI PE 格式；源码脚本继续满足 PowerShell 5.1 的 ASCII / UTF-8 BOM 要求。
+输出目录应为新的构建目录；同名 EXE 或校验文件存在时拒绝覆盖。构建使用系统 .NET Framework 的 x64 C# 编译器及 Windows Forms，不安装额外包。产物为 `Proxy2TUN-AutoBridge-v0.3.1.exe` 和 `SHA256SUMS.txt`。构建器校验全部显式载荷文件、ZIP 内容、内嵌资源与 x64 GUI PE 格式；源码脚本继续满足 PowerShell 5.1 的 ASCII / UTF-8 BOM 要求。
 
 开发检查入口 `--self-test` 不显示界面、不要求管理员权限、不改网络；`--preview` 仅预览界面。它们不替代真实管理员权限下的启动、停止、网络切换和应用验收。
 

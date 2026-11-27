@@ -47,7 +47,7 @@ function Remove-P2TOwnedNetwork {
     }
 }
 function Stop-P2TOwnedChild {
-    param($Child, $State, [string]$StatePath, [string]$LogPath)
+    param($Child, $State, [string]$StatePath, [string]$LogPath, [string]$Reason='Unspecified')
     if ($Child) {
         $graceful = $Child.StopGracefully(3000)
         $Child.Dispose()
@@ -57,6 +57,6 @@ function Stop-P2TOwnedChild {
         $State.Child = $null; $State.Status = 'Waiting'; $State.AdapterGuid = $null
         Write-P2TState -State $State -Path $StatePath
     }
-    if ($Child) { Write-P2TLog -Path $LogPath -Message ('TUN stopped (graceful={0}); owned adapter cleanup completed.' -f $graceful) }
+    if ($Child) { Write-P2TLog -Path $LogPath -Message ('TUN stopped: reason={0}; graceful={1}; owned adapter cleanup completed.' -f $Reason,$graceful) }
 }
 Export-ModuleMember -Function *-P2T*

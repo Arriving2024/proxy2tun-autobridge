@@ -2,12 +2,14 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$')]
-    [string]$Version = 'v0.3.0',
+    [string]$Version,
     [string]$OutputDirectory
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Split-Path $PSScriptRoot -Parent))
+if(-not $Version){$Version='v'+([IO.File]::ReadAllText((Join-Path $repo 'VERSION'))).Trim()}
+if($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$'){throw 'Invalid release version.'}
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repo 'dist' }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 if ($OutputDirectory -eq $repo) { throw 'Choose a separate output directory, not the repository root.' }

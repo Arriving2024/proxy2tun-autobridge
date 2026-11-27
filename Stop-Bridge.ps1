@@ -21,6 +21,8 @@ if ($state.Schema -ne 1 -or $state.Root -ne $PSScriptRoot) { throw 'Ownership st
 if ((Test-P2TStamp $state.Owner) -or ($state.Child -and (Test-P2TStamp $state.Child))) {
     if (-not (Test-P2TAdministrator)) { throw 'Stop requested. For forced cleanup, run Stop-Bridge.cmd as administrator.' }
     Initialize-P2TNative
+    if ($Emergency) { $stopReason='EmergencyStop' } else { $stopReason='StopWaitExpired' }
+    try { Write-P2TLog -Path (Join-Path $runtime 'bridge.log') -Message ("Forced cleanup requested: "+$stopReason) } catch { }
     if (Test-P2TStamp $state.Owner) {
         $owner=Get-CimInstance Win32_Process -Filter ('ProcessId={0}' -f $state.Owner.Id)
         if ($owner -and (Test-P2TStamp $state.Owner)) {

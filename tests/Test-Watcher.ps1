@@ -21,20 +21,30 @@ $script:root=Split-Path $PSScriptRoot -Parent
 $script:scenario=(Get-Content -LiteralPath (Join-Path $script:root 'scenario.txt') -Raw).Trim()
 $script:scans=0;$script:identityMisses=0
 function Get-P2TProxyCandidates {
+    param([switch]$IncludeEstablished,[scriptblock]$OnProgress,[string]$StopPath)
     $script:scans++
+    if($OnProgress){
+        $null=& $OnProgress 1 2 4
+        $status=Get-Content -LiteralPath (Join-Path $script:root 'runtime\desktop-status.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        [IO.File]::AppendAllText((Join-Path $script:root 'progress.txt'),($status.Status+'|'+$status.Message+"`n"))
+    }
     if($script:scans -eq 1){return}
     [pscustomobject]@{Host='127.0.0.1';Port=10808;Protocol='socks5';ProcessId=4242;ProcessName='fixture.exe';ProcessPath='C:\Fixture\fixture.exe';ProcessStartTime='2026-10-24T00:00:00.0000000Z';ParentProcessId=0;ParentName='';ParentPath='';ParentProcessStartTime='';Source='Listener';Priority=100}
 }
 function Select-P2TProxyCandidate {param($Candidates,$ProxyHost,$ProxyPort,$ProxyProtocol) $Candidates | Select-Object -First 1}
 function Get-P2TFamilyKey {param($Candidate) return ('core|'+$Candidate.ProcessId)}
 function Test-P2TProcessIdentity {
-    param($Candidate)
-    if($script:scenario -eq 'Identity' -and [Proxy2Tun.OwnedProcess]::Active -and [Proxy2Tun.OwnedProcess]::Starts -eq 1){$script:identityMisses++;return $false}
+    param($Candidate,[ref]$FailureKind)
+    if($script:scenario -eq 'Identity' -and [Proxy2Tun.OwnedProcess]::Active -and [Proxy2Tun.OwnedProcess]::Starts -eq 1){
+        if($FailureKind){$FailureKind.Value='UpstreamIdentityUnverified'}
+        $script:identityMisses++
+        return $false
+    }
     return $true
 }
 function Test-P2TProxyEndpoint {
     param($ProxyHost,$Port,$Protocol)
-    [pscustomobject]@{Success=(-not ($script:scenario -eq 'ProxyLoss' -and [Proxy2Tun.OwnedProcess]::Starts -eq 1))}
+    [pscustomobject]@{Success=(-not ($script:scenario -eq 'ProxyLoss' -and [Proxy2Tun.OwnedProcess]::Starts -eq 1));Classification='ProxyConnectionRefused'}
 }
 Export-ModuleMember -Function *-P2T*
 '@
@@ -87,8 +97,9 @@ function Write-P2TState {
 function Write-P2TLog {param($Message,$Path) [IO.File]::AppendAllText($Path,($Message+"`n"))}
 function Remove-P2TOwnedNetwork {param($State) [IO.File]::AppendAllText((Join-Path $script:root 'cleanup.txt'),"mock cleanup`n")}
 function Stop-P2TOwnedChild {
-    param($Child,$State,$StatePath,$LogPath)
+    param($Child,$State,$StatePath,$LogPath,$Reason)
     if($Child){$null=$Child.StopGracefully(3000);$Child.Dispose()}
+    if($Child){Write-P2TLog -Path $LogPath -Message ("TUN stopped: reason="+$Reason)}
     Remove-P2TOwnedNetwork $State
     if($State){$State.Child=$null;$State.Status='Waiting';$State.AdapterGuid=$null;Write-P2TState $State $StatePath}
 }
@@ -115,8 +126,11 @@ function Get-P2TNetworkFingerprint {
     param($OwnedInterfaceName)
     $script:fixtureScans++
     $fingerprint='wifi-a'
-    if($script:fixtureScenario -eq 'Network'){
+    if($script:fixtureScenario -in @('Network','NetworkFailure')){
         if($script:fixtureScans -eq 4 -or $script:fixtureScans -ge 6){$fingerprint='ethernet-b'}
+    }
+    if($script:fixtureScenario -eq 'Network' -and $script:fixtureScans -ge 9){
+        [IO.File]::WriteAllText((Join-Path $script:fixtureRoot 'runtime\stop.request'),'fixture stop after healthy network change')
     }
     [IO.File]::AppendAllText((Join-Path $script:fixtureRoot 'network.txt'),($script:fixtureScans.ToString()+'|'+$fingerprint+"`n"))
     [pscustomobject]@{Valid=$true;Available=$true;Fingerprint=$fingerprint}
@@ -126,7 +140,8 @@ function Test-P2TForwardingHealth {
     $script:fixtureHealthCalls++
     $good=$true;$status=204;$classification='HttpSuccess';$curl=0
     if($script:fixtureScenario -eq 'Challenge'){$status=403;$classification='CloudflareChallenge'}
-    if($script:fixtureScenario -eq 'StartupFailure' -or ($script:fixtureScenario -eq 'Forwarding' -and $script:fixtureHealthCalls -gt 1)){$good=$false;$status=0;$classification='NetworkError';$curl=56}
+    if($script:fixtureScenario -eq 'StartupFailure' -or ($script:fixtureScenario -eq 'Forwarding' -and $script:fixtureHealthCalls -gt 1) -or
+        ($script:fixtureScenario -eq 'NetworkFailure' -and $script:fixtureScans -ge 8)){$good=$false;$status=0;$classification='NetworkError';$curl=56}
     [pscustomobject]@{Success=$good;FailureKind=$(if(-not $good){"Https"}else{""});Dns=[pscustomobject]@{Success=$true;Classification='DnsSuccess'};FreshDns=[pscustomobject]@{Success=$true;Classification='FreshDnsNxDomain'};Https=[pscustomobject]@{TransportSuccess=$good;ServiceSuccess=($status -eq 204);Classification=$classification;HttpStatus=$status;CurlExitCode=$curl;ElapsedSeconds=0.4}}
 }
 Export-ModuleMember -Function *-P2T*
@@ -134,11 +149,11 @@ Export-ModuleMember -Function *-P2T*
 
 try{
     $null=New-Item -ItemType Directory -Path $testRoot -Force
-    foreach($scenario in @('Challenge','Identity','ProxyLoss','RouteLoss','Network','Forwarding','StartupFailure','Desktop')){
+    foreach($scenario in @('Challenge','Identity','ProxyLoss','RouteLoss','Network','NetworkFailure','Forwarding','StartupFailure','Desktop')){
         $fixtureRoot=Join-Path $testRoot $scenario
         $null=New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'src') -Force
         $null=New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'runtime') -Force
-        foreach($name in @('Start-Bridge.ps1','Stop-Bridge.ps1')){Copy-Item -LiteralPath (Join-Path $repository $name) -Destination (Join-Path $fixtureRoot $name)}
+        foreach($name in @('Start-Bridge.ps1','Stop-Bridge.ps1','VERSION')){Copy-Item -LiteralPath (Join-Path $repository $name) -Destination (Join-Path $fixtureRoot $name)}
         Copy-Item -LiteralPath (Join-Path $repository 'src\Config.psm1') -Destination (Join-Path $fixtureRoot 'src\Config.psm1')
         if($scenario -eq 'Desktop'){Copy-Item -LiteralPath (Join-Path $repository 'src\Desktop.psm1') -Destination (Join-Path $fixtureRoot 'src\Desktop.psm1')}
         $healthSource=[IO.File]::ReadAllText((Join-Path $repository 'src\Health.psm1'))
@@ -173,24 +188,31 @@ exit /b 0
                 Assert-Watcher ($starts -eq 1 -and $state.DesktopMode -eq $true -and $events -contains 'Running' -and $events -notcontains 'Backoff') 'Desktop waits for a proxy and completes verified startup without spending a recovery retry'
                 Assert-Watcher ($desktopStatus.Status -eq 'Stopped' -and $desktopStatus.SelectedEndpoint -eq 'socks5://127.0.0.1:10808') 'Desktop state follows watcher cleanup and retains the verified bound endpoint'
                 Assert-Watcher ((Get-Content -LiteralPath (Join-Path $fixtureRoot 'hidden.txt') -Raw).Trim() -eq 'True') 'Desktop watcher requests the hidden native core overload'
+                $progress=Get-Content -LiteralPath (Join-Path $fixtureRoot 'progress.txt') -Raw -Encoding UTF8
+                Assert-Watcher ($progress -match 'Scanning\|.*1/2.*4') 'Discovery callback publishes actual counted progress for the desktop'
             }
             'Challenge'{
                 Assert-Watcher ($starts -eq 1 -and @($events | Where-Object {$_ -eq 'Running'}).Count -eq 1 -and $events -notcontains 'Backoff') '403 challenge passes startup without triggering a rebuild'
                 Assert-Watcher ($log -match 'CloudflareChallenge, HTTP 403, curl 0' -and $log -match 'FreshDnsNxDomain') '403 service status and fresh DNS evidence are logged separately'
             }
             'Identity'{
-                Assert-Watcher ($starts -eq 2 -and $log -match 'UpstreamUnavailableOrIdentityChanged') 'Upstream identity loss crosses threshold, releases TUN and rebuilds once'
+                Assert-Watcher ($starts -eq 2 -and $log -match 'TUN stopped: reason=UpstreamIdentityUnverified') 'Upstream identity loss crosses threshold, releases TUN and rebuilds once'
             }
             'ProxyLoss'{
-                Assert-Watcher ($starts -eq 2 -and $log -match 'UpstreamUnavailableOrIdentityChanged') 'Proxy health loss crosses threshold and safely rebuilds once'
+                Assert-Watcher ($starts -eq 2 -and $log -match 'TUN stopped: reason=ProxyConnectionRefused') 'Proxy connection refusal is distinct from identity loss and safely rebuilds once'
             }
             'RouteLoss'{
                 Assert-Watcher ($starts -eq 2 -and $log -match 'OwnedTunRoutesMissing') 'Missing split-route halves trigger recovery even when mock HTTPS would succeed directly'
             }
             'Network'{
-                Assert-Watcher ($starts -eq 2 -and @([regex]::Matches($log,'Recovery 1/1: PhysicalNetworkChanged')).Count -eq 1) 'Transient network change is ignored and one stable switch rebuilds once'
+                Assert-Watcher ($starts -eq 1 -and $events -notcontains 'Backoff' -and $state.RecoveryFailures -eq 0 -and
+                    @([regex]::Matches($log,'Network change observed')).Count -eq 1 -and $log -match 'Network recheck passed; current TUN retained') 'A stable switch rechecks forwarding without stopping a healthy TUN or spending recovery'
                 $networkEvents=@(Get-Content -LiteralPath (Join-Path $fixtureRoot 'network.txt'))
-                Assert-Watcher ($networkEvents -contains '4|ethernet-b' -and $networkEvents -contains '5|wifi-a' -and $networkEvents -contains '8|ethernet-b') 'Wi-Fi return and full later debounce are observed before rebuilding'
+                Assert-Watcher ($networkEvents -contains '4|ethernet-b' -and $networkEvents -contains '5|wifi-a' -and $networkEvents -contains '8|ethernet-b') 'Transient switch is ignored and the later switch must pass debounce'
+            }
+            'NetworkFailure'{
+                Assert-Watcher ($starts -eq 2 -and $events -contains 'RecoveryPaused' -and $log -match 'Network change observed' -and
+                    $log -match 'Recovery 1/1: TunAliveButForwardingFailed' -and $log -notmatch 'Recovery 1/1: PhysicalNetworkChanged') 'Confirmed loss after a network change still rebuilds within budget'
             }
             'Forwarding'{
                 Assert-Watcher ($starts -eq 2 -and $events -contains 'RecoveryPaused' -and @($events | Where-Object {$_ -eq 'Running'}).Count -eq 1) 'Alive TUN with failed forwarding permits only the configured single rebuild and then latches'
@@ -253,7 +275,7 @@ exit /b 0
     if(-not $process.WaitForExit(15000)){throw 'Ownership mismatch fixture timed out.'}
     Assert-Watcher ($process.ExitCode -ne 0 -and (Get-Content -LiteralPath (Join-Path $fixtureRoot 'mismatch-stderr.log') -Raw) -match 'Previous ownership state mismatch') 'Start rejects previous state belonging to another installation'
     Assert-Watcher ((Get-FixtureLineCount (Join-Path $fixtureRoot 'cleanup.txt')) -eq $cleanupBefore -and (Get-FixtureLineCount (Join-Path $fixtureRoot 'starts.txt')) -eq $startsBefore) 'Ownership mismatch performs neither network cleanup nor core start'
-    Write-Host ('Watcher integration passed: {0} checks across eight scenarios plus scoped emergency stop. All network/core operations mocked.' -f $checks)
+    Write-Host ('Watcher integration passed: {0} checks across nine scenarios plus scoped emergency stop. All network/core operations mocked.' -f $checks)
 }finally{
     if($process -and -not $process.HasExited){$process.Kill();$process.WaitForExit()}
     $resolved=[IO.Path]::GetFullPath($testRoot)
